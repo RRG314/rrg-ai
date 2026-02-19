@@ -1,0 +1,216 @@
+:root {
+  --bg: #f8f3eb;
+  --surface: #fffefb;
+  --ink: #1b2735;
+  --muted: #6a7a8f;
+  --line: #d8e1ec;
+  --teal: #0f8b8d;
+  --orange: #f4a261;
+  --danger: #b23a48;
+  --radius: 12px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  background:
+    radial-gradient(circle at 8% 0%, #d8eff2 0, transparent 35%),
+    radial-gradient(circle at 100% 100%, #fbe7cf 0, transparent 30%),
+    var(--bg);
+}
+
+.app {
+  max-width: 1200px;
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 16px;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  gap: 12px;
+}
+
+.topbar,
+.status,
+.sessions,
+.chat-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.topbar {
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 1.35rem;
+}
+
+.topbar p {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+button {
+  border: 0;
+  border-radius: 10px;
+  font: inherit;
+  cursor: pointer;
+  padding: 10px 14px;
+  background: linear-gradient(120deg, var(--teal), var(--orange));
+  color: #fff;
+  font-weight: 700;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+button.ghost {
+  background: #edf3f8;
+  color: #24364b;
+  border: 1px solid #d3deea;
+  font-weight: 600;
+}
+
+button.warn {
+  color: var(--danger);
+}
+
+.status {
+  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 0.94rem;
+}
+
+.layout {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 12px;
+}
+
+.sessions {
+  padding: 12px;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+.sessions h2 {
+  font-size: 1rem;
+  margin: 0 0 10px;
+}
+
+#session-list {
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.session-item {
+  border: 1px solid #d7e1ec;
+  background: #f9fcff;
+  color: #24364b;
+  border-radius: 9px;
+  padding: 8px 10px;
+  text-align: left;
+  font-size: 0.88rem;
+}
+
+.session-item.active {
+  border-color: #9acfd0;
+  background: #eaf8f8;
+}
+
+.chat-panel {
+  min-height: 0;
+  padding: 12px;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  gap: 10px;
+}
+
+.chat-log {
+  overflow: auto;
+  min-height: 240px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 12px;
+  background: #fff;
+}
+
+.msg {
+  margin: 8px 0;
+  border-radius: 10px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  white-space: pre-wrap;
+  line-height: 1.42;
+}
+
+.msg.user {
+  margin-left: 15%;
+  background: #e6f7f7;
+  border-color: #bee3e3;
+}
+
+.msg.ai {
+  margin-right: 10%;
+  background: #fff0de;
+  border-color: #f4d4af;
+}
+
+.composer {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 54px;
+  max-height: 240px;
+  border: 1px solid #ccd8e5;
+  border-radius: 10px;
+  padding: 10px;
+  font: inherit;
+}
+
+@media (max-width: 900px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .sessions {
+    max-height: 190px;
+  }
+
+  .msg.user,
+  .msg.ai {
+    margin-left: 0;
+    margin-right: 0;
+  }
+
+  .composer {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RRG AI</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div>
+          <h1>RRG AI</h1>
+          <p>Static GitHub Pages AI chat with persistent browser memory.</p>
+        </div>
+        <div class="actions">
+          <button id="new-session" class="ghost">New Chat</button>
+          <button id="clear-memory" class="ghost warn">Clear Memory</button>
+        </div>
+      </header>
+
+      <section class="status" id="status"></section>
+
+      <section class="layout">
+        <aside class="sessions">
+          <h2>Sessions</h2>
+          <div id="session-list"></div>
+        </aside>
+
+        <section class="chat-panel">
+          <div id="chat-log" class="chat-log"></div>
+          <form id="chat-form" class="composer">
+            <textarea
+              id="chat-input"
+              placeholder="Chat normally. Example: I need an end-to-end plan to optimize my AI data pipeline."
+              rows="3"
+            ></textarea>
+            <button type="submit" id="send">Send</button>
+          </form>
+        </section>
+      </section>
+    </main>
+
+    <script src="corpus.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
