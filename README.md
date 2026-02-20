@@ -1,8 +1,8 @@
 # RRG AI
 
-[![CI](https://github.com/RRG314/ai/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/RRG314/ai/actions/workflows/ci.yml)
-[![Pages](https://github.com/RRG314/ai/actions/workflows/pages.yml/badge.svg?branch=main)](https://github.com/RRG314/ai/actions/workflows/pages.yml)
-[![Release](https://img.shields.io/github/v/release/RRG314/ai?display_name=tag)](https://github.com/RRG314/ai/releases)
+[![CI](https://github.com/RRG314/rrg-ai/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/RRG314/rrg-ai/actions/workflows/ci.yml)
+[![Pages](https://github.com/RRG314/rrg-ai/actions/workflows/pages.yml/badge.svg?branch=main)](https://github.com/RRG314/rrg-ai/actions/workflows/pages.yml)
+[![Release](https://img.shields.io/github/v/release/RRG314/rrg-ai?display_name=tag)](https://github.com/RRG314/rrg-ai/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Local-first modular AI platform with an HTML chat UI and a Python backend.
