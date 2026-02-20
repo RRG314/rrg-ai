@@ -62,6 +62,41 @@ class TaskRecord:
     provenance: list[dict[str, object]]
 
 
+@dataclass
+class StructuredMemoryItem:
+    id: int
+    session_id: str
+    key: str
+    value: str
+    source: str
+    created_at: int
+    updated_at: int
+
+
+@dataclass
+class OutcomeItem:
+    id: int
+    session_id: str
+    title: str
+    summary: str
+    status: str
+    score: float
+    created_at: int
+    updated_at: int
+
+
+@dataclass
+class ArtifactItem:
+    id: int
+    session_id: str
+    artifact_type: str
+    location: str
+    source: str
+    doc_id: str
+    description: str
+    created_at: int
+
+
 class SQLiteStore:
     def __init__(
         self,
@@ -143,6 +178,50 @@ class SQLiteStore:
                     provenance_json TEXT NOT NULL,
                     FOREIGN KEY (session_id) REFERENCES sessions(id)
                 );
+
+                CREATE TABLE IF NOT EXISTS facts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'user',
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    UNIQUE(session_id, key)
+                );
+
+                CREATE TABLE IF NOT EXISTS preferences (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'user',
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    UNIQUE(session_id, key)
+                );
+
+                CREATE TABLE IF NOT EXISTS outcomes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    score REAL NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS artifacts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    artifact_type TEXT NOT NULL,
+                    location TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT '',
+                    doc_id TEXT NOT NULL DEFAULT '',
+                    description TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL
+                );
                 """
             )
 
@@ -211,6 +290,189 @@ class SQLiteStore:
                 (limit,),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def upsert_fact(self, session_id: str, key: str, value: str, source: str = "user") -> None:
+        now = int(time.time())
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO facts(session_id, key, value, source, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id, key)
+                DO UPDATE SET value = excluded.value, source = excluded.source, updated_at = excluded.updated_at
+                """,
+                (session_id, key, value, source, now, now),
+            )
+
+    def upsert_preference(self, session_id: str, key: str, value: str, source: str = "user") -> None:
+        now = int(time.time())
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO preferences(session_id, key, value, source, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id, key)
+                DO UPDATE SET value = excluded.value, source = excluded.source, updated_at = excluded.updated_at
+                """,
+                (session_id, key, value, source, now, now),
+            )
+
+    def add_outcome(
+        self,
+        session_id: str,
+        title: str,
+        summary: str,
+        status: str = "completed",
+        score: float = 0.0,
+    ) -> int:
+        now = int(time.time())
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO outcomes(session_id, title, summary, status, score, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (session_id, title, summary, status, float(score), now, now),
+            )
+        return int(cursor.lastrowid)
+
+    def add_artifact(
+        self,
+        session_id: str,
+        artifact_type: str,
+        location: str,
+        source: str = "",
+        doc_id: str = "",
+        description: str = "",
+    ) -> int:
+        now = int(time.time())
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO artifacts(session_id, artifact_type, location, source, doc_id, description, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    artifact_type,
+                    location,
+                    source,
+                    doc_id,
+                    description,
+                    now,
+                ),
+            )
+        return int(cursor.lastrowid)
+
+    def list_facts(self, session_id: str, limit: int = 200) -> list[StructuredMemoryItem]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, session_id, key, value, source, created_at, updated_at
+                FROM facts
+                WHERE session_id = ?
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        return [
+            StructuredMemoryItem(
+                id=int(r["id"]),
+                session_id=str(r["session_id"]),
+                key=str(r["key"]),
+                value=str(r["value"]),
+                source=str(r["source"]),
+                created_at=int(r["created_at"]),
+                updated_at=int(r["updated_at"]),
+            )
+            for r in rows
+        ]
+
+    def list_preferences(self, session_id: str, limit: int = 200) -> list[StructuredMemoryItem]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, session_id, key, value, source, created_at, updated_at
+                FROM preferences
+                WHERE session_id = ?
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        return [
+            StructuredMemoryItem(
+                id=int(r["id"]),
+                session_id=str(r["session_id"]),
+                key=str(r["key"]),
+                value=str(r["value"]),
+                source=str(r["source"]),
+                created_at=int(r["created_at"]),
+                updated_at=int(r["updated_at"]),
+            )
+            for r in rows
+        ]
+
+    def list_outcomes(self, session_id: str, limit: int = 200) -> list[OutcomeItem]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, session_id, title, summary, status, score, created_at, updated_at
+                FROM outcomes
+                WHERE session_id = ?
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        return [
+            OutcomeItem(
+                id=int(r["id"]),
+                session_id=str(r["session_id"]),
+                title=str(r["title"]),
+                summary=str(r["summary"]),
+                status=str(r["status"]),
+                score=float(r["score"]),
+                created_at=int(r["created_at"]),
+                updated_at=int(r["updated_at"]),
+            )
+            for r in rows
+        ]
+
+    def list_artifacts(self, session_id: str, limit: int = 500) -> list[ArtifactItem]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, session_id, artifact_type, location, source, doc_id, description, created_at
+                FROM artifacts
+                WHERE session_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        return [
+            ArtifactItem(
+                id=int(r["id"]),
+                session_id=str(r["session_id"]),
+                artifact_type=str(r["artifact_type"]),
+                location=str(r["location"]),
+                source=str(r["source"]),
+                doc_id=str(r["doc_id"]),
+                description=str(r["description"]),
+                created_at=int(r["created_at"]),
+            )
+            for r in rows
+        ]
+
+    def memory_snapshot(self, session_id: str, limit: int = 200) -> dict[str, object]:
+        return {
+            "facts": [x.__dict__ for x in self.list_facts(session_id, limit=limit)],
+            "preferences": [x.__dict__ for x in self.list_preferences(session_id, limit=limit)],
+            "outcomes": [x.__dict__ for x in self.list_outcomes(session_id, limit=limit)],
+            "artifacts": [x.__dict__ for x in self.list_artifacts(session_id, limit=max(200, limit))],
+        }
 
     def create_task(
         self,

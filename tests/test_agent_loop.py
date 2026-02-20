@@ -50,6 +50,14 @@ def test_agent_loop_builds_trace_and_evidence(tmp_path: Path) -> None:
     assert isinstance(res.get("tool_calls"), list) and res["tool_calls"]
     assert isinstance(res.get("provenance"), list) and res["provenance"]
     assert isinstance(res.get("evidence"), list) and res["evidence"]
+    for item in res["evidence"]:
+        if not isinstance(item, dict):
+            continue
+        sources = item.get("sources") or []
+        snippets = item.get("snippets") or []
+        if item.get("confidence", 0) > 0:
+            assert sources
+            assert snippets
 
     task = store.get_task(str(res["task_id"]))
     assert task is not None

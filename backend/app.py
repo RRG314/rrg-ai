@@ -171,6 +171,14 @@ def task(task_id: str) -> dict[str, object]:
     }
 
 
+@app.get("/api/memory")
+def memory(session_id: str) -> dict[str, object]:
+    try:
+        return {"session_id": session_id, **store.memory_snapshot(session_id, limit=300)}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/docs")
 def docs() -> dict[str, object]:
     return {"documents": store.list_documents(limit=200)}

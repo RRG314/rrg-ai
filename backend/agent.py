@@ -3,9 +3,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from .llm import OllamaClient
+from .skills import doc_pipeline, folder_audit_pipeline, research_pipeline
 from .storage import MemoryFact, SQLiteStore
 from .tools.filesystem import FileBrowser
 from .tools.web import dictionary_define, download_url, fetch_url_text, search_web
@@ -173,6 +173,7 @@ class LocalAgent:
         tool_calls: list[dict[str, object]] = []
         provenance: list[dict[str, object]] = []
         context_blocks: list[str] = []
+        artifact_keys: set[tuple[str, str, str]] = set()
 
         task_id = self.store.create_task(
             sid,
@@ -213,6 +214,7 @@ class LocalAgent:
 
             for item in result.get("provenance", []):
                 provenance.append(item)
+                self._record_artifact_from_provenance(sid, item, artifact_keys)
 
             if str(result.get("status")) == "ok":
                 plan[idx]["status"] = "done"
@@ -260,10 +262,17 @@ class LocalAgent:
 
         evidence: list[dict[str, object]] = []
         if cfg.evidence_mode:
-            evidence = self._build_evidence(answer, provenance)
-            answer = _attach_evidence_block(answer, evidence)
+            evidence = self._build_evidence_from_provenance(user_text, provenance, max_claims=6)
+            answer = _render_evidence_answer(user_text, evidence, strict_facts=cfg.strict_facts)
 
         citations = _extract_citations(provenance)
+        outcome_id = self.store.add_outcome(
+            sid,
+            title=user_text[:120] or "Agent outcome",
+            summary=answer[:3000],
+            status="completed",
+            score=float(len(evidence)),
+        )
 
         self.store.add_message(sid, "assistant", answer)
         self.store.update_task(
@@ -277,6 +286,7 @@ class LocalAgent:
                 "provenance_count": len(provenance),
                 "citation_count": len(citations),
                 "evidence_count": len(evidence),
+                "outcome_id": outcome_id,
             },
             provenance=provenance,
         )
@@ -296,12 +306,48 @@ class LocalAgent:
             "citations": citations,
             "provenance": provenance,
             "evidence": evidence,
+            "outcome_id": outcome_id,
+            "memory": self.store.memory_snapshot(sid, limit=120),
             "done": True,
         }
 
     def _build_agent_actions(self, user_text: str, cfg: AgentRunConfig) -> list[AgentAction]:
         actions: list[AgentAction] = []
         low = user_text.lower()
+        research_requested = any(token in low for token in ["research pipeline", "run research", "literature scan"])
+        doc_pipeline_requested = any(token in low for token in ["doc pipeline", "document pipeline", "evidence sweep"])
+        folder_audit_requested = any(token in low for token in ["folder audit", "repo audit", "audit folder", "audit repo"])
+
+        if cfg.allow_web and research_requested:
+            query = _extract_research_query(user_text)
+            actions.append(
+                AgentAction(
+                    tool="skill.research_pipeline",
+                    title=f"Run research pipeline for '{query}'",
+                    args={"query": query, "max_results": 6, "fetch_top": 2},
+                    retryable=True,
+                )
+            )
+
+        if cfg.allow_docs and doc_pipeline_requested:
+            query = _extract_doc_pipeline_query(user_text)
+            actions.append(
+                AgentAction(
+                    tool="skill.doc_pipeline",
+                    title=f"Run doc pipeline for '{query}'",
+                    args={"query": query, "limit": 10},
+                )
+            )
+
+        if cfg.allow_files and folder_audit_requested:
+            folder = _extract_folder_audit_path(user_text)
+            actions.append(
+                AgentAction(
+                    tool="skill.folder_audit_pipeline",
+                    title=f"Run folder audit pipeline in {folder}",
+                    args={"path": folder, "max_entries": 700, "max_depth": 3},
+                )
+            )
 
         if cfg.allow_files:
             list_match = re.search(
@@ -347,7 +393,7 @@ class LocalAgent:
                         )
                     )
 
-        if cfg.allow_web:
+        if cfg.allow_web and not research_requested:
             dict_term = _extract_dictionary_term(user_text)
             if dict_term:
                 actions.append(
@@ -412,7 +458,7 @@ class LocalAgent:
                 )
             )
 
-        if cfg.allow_docs:
+        if cfg.allow_docs and not doc_pipeline_requested:
             actions.append(
                 AgentAction(
                     tool="docs.retrieve",
@@ -503,6 +549,48 @@ class LocalAgent:
         provenance: list[dict[str, object]],
     ) -> dict[str, object]:
         tool = action.tool
+
+        if tool == "skill.research_pipeline":
+            out = research_pipeline(
+                query=str(action.args.get("query") or user_text),
+                store=self.store,
+                max_results=int(action.args.get("max_results") or 6),
+                fetch_top=int(action.args.get("fetch_top") or 2),
+            )
+            return {
+                "status": out.status,
+                "detail": out.detail,
+                "context_block": out.context_block,
+                "provenance": out.provenance,
+            }
+
+        if tool == "skill.doc_pipeline":
+            out = doc_pipeline(
+                query=str(action.args.get("query") or user_text),
+                store=self.store,
+                limit=int(action.args.get("limit") or 10),
+            )
+            return {
+                "status": out.status,
+                "detail": out.detail,
+                "context_block": out.context_block,
+                "provenance": out.provenance,
+            }
+
+        if tool == "skill.folder_audit_pipeline":
+            out = folder_audit_pipeline(
+                path=str(action.args.get("path") or "."),
+                files=self.files,
+                store=self.store,
+                max_entries=int(action.args.get("max_entries") or 700),
+                max_depth=int(action.args.get("max_depth") or 3),
+            )
+            return {
+                "status": out.status,
+                "detail": out.detail,
+                "context_block": out.context_block,
+                "provenance": out.provenance,
+            }
 
         if tool == "files.list":
             raw_path = str(action.args.get("path") or ".")
@@ -803,57 +891,70 @@ class LocalAgent:
             "rules-agent",
         )
 
-    def _build_evidence(
+    def _build_evidence_from_provenance(
         self,
-        answer: str,
+        user_text: str,
         provenance: list[dict[str, object]],
-        max_claims: int = 4,
+        max_claims: int = 6,
     ) -> list[dict[str, object]]:
-        if not provenance:
+        query_tokens = set(_tokenize_for_match(user_text))
+        candidates: list[tuple[int, dict[str, object]]] = []
+
+        for item in provenance:
+            source = str(item.get("source") or "").strip()
+            snippet = str(item.get("snippet") or "").strip()
+            if not source or not snippet:
+                continue
+            snippet_tokens = set(_tokenize_for_match(snippet))
+            overlap = len(query_tokens.intersection(snippet_tokens))
+            candidates.append((overlap, item))
+
+        if not candidates:
             return [
                 {
-                    "claim": "Insufficient grounded sources were available for verified claims.",
+                    "claim": "No grounded claim can be made because no source+snippet evidence was collected.",
                     "sources": [],
                     "snippets": [],
                     "confidence": 0.0,
                 }
             ]
 
-        sentences = [s.strip() for s in re.split(r"[.!?]\s+", answer) if len(s.strip()) >= 20]
-        claims = sentences[:max_claims] if sentences else [answer[:180].strip()]
-
-        evidence: list[dict[str, object]] = []
-        for claim in claims:
-            claim_tokens = set(_tokenize_for_match(claim))
-            scored: list[tuple[int, dict[str, object]]] = []
-            for item in provenance:
-                snippet = str(item.get("snippet") or "")
-                if not snippet:
-                    continue
-                snippet_tokens = set(_tokenize_for_match(snippet))
-                overlap = len(claim_tokens.intersection(snippet_tokens))
-                if overlap > 0:
-                    scored.append((overlap, item))
-
-            scored.sort(key=lambda x: x[0], reverse=True)
-            chosen = [x[1] for x in scored[:2]]
-            if not chosen:
-                chosen = provenance[:1]
-
-            sources = [str(c.get("source") or "") for c in chosen if str(c.get("source") or "")]
-            snippets = [str(c.get("snippet") or "")[:220] for c in chosen if str(c.get("snippet") or "")]
-            overlap_max = float(scored[0][0]) if scored else 0.0
-            confidence = min(0.98, 0.25 + 0.2 * len(chosen) + 0.08 * overlap_max)
-
-            evidence.append(
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        selected: list[dict[str, object]] = []
+        used: set[tuple[str, str]] = set()
+        for overlap, item in candidates:
+            if len(selected) >= max_claims:
+                break
+            source = str(item.get("source") or "")
+            snippet = str(item.get("snippet") or "")
+            key = (source, snippet[:120])
+            if key in used:
+                continue
+            used.add(key)
+            selected.append(
                 {
-                    "claim": claim,
-                    "sources": sources,
-                    "snippets": snippets,
-                    "confidence": round(confidence, 2),
+                    "overlap": overlap,
+                    "source": source,
+                    "snippet": snippet,
+                    "doc_id": str(item.get("doc_id") or ""),
                 }
             )
 
+        evidence: list[dict[str, object]] = []
+        for picked in selected:
+            snippet = str(picked["snippet"])
+            source = str(picked["source"])
+            overlap = int(picked["overlap"])
+            claim = _claim_from_snippet(snippet, max_chars=180)
+            confidence = min(0.98, 0.4 + 0.08 * overlap + 0.1 * (1 if picked.get("doc_id") else 0))
+            evidence.append(
+                {
+                    "claim": claim,
+                    "sources": [source],
+                    "snippets": [snippet[:260]],
+                    "confidence": round(confidence, 2),
+                }
+            )
         return evidence
 
     def _run_file_tools(self, user_text: str, tool_events: list[ToolEvent], context_blocks: list[str]) -> None:
@@ -978,24 +1079,57 @@ class LocalAgent:
                 except Exception as exc:
                     tool_events.append(ToolEvent("web.download", "error", f"{url}: {exc}"))
 
+    def _record_artifact_from_provenance(
+        self,
+        session_id: str,
+        item: dict[str, object],
+        seen: set[tuple[str, str, str]],
+    ) -> None:
+        source_type = str(item.get("source_type") or "")
+        source = str(item.get("source") or "")
+        doc_id = str(item.get("doc_id") or "")
+        location = str(item.get("path") or item.get("url") or source)
+        if not location:
+            return
+        key = (source_type, location, doc_id)
+        if key in seen:
+            return
+        seen.add(key)
+        self.store.add_artifact(
+            session_id=session_id,
+            artifact_type=source_type or "source",
+            location=location,
+            source=source,
+            doc_id=doc_id,
+            description=str(item.get("snippet") or "")[:220],
+        )
+
     def _extract_memory(self, session_id: str, user_text: str) -> None:
         text = user_text.strip()
 
         name = re.search(r"\bmy name is\s+([A-Za-z][A-Za-z\s'-]{1,48})", text, re.IGNORECASE)
         if name:
-            self.store.upsert_memory(session_id, "name", name.group(1).strip())
+            value = name.group(1).strip()
+            self.store.upsert_memory(session_id, "name", value)
+            self.store.upsert_fact(session_id, "name", value, source="user")
 
         goal = re.search(r"\bmy goal is\s+([^.!?\n]{3,240})", text, re.IGNORECASE)
         if goal:
-            self.store.upsert_memory(session_id, "goal", goal.group(1).strip())
+            value = goal.group(1).strip()
+            self.store.upsert_memory(session_id, "goal", value)
+            self.store.upsert_fact(session_id, "goal", value, source="user")
 
         pref = re.search(r"\bi (?:prefer|like)\s+([^.!?\n]{3,240})", text, re.IGNORECASE)
         if pref:
-            self.store.upsert_memory(session_id, "preference", pref.group(1).strip())
+            value = pref.group(1).strip()
+            self.store.upsert_memory(session_id, "preference", value)
+            self.store.upsert_preference(session_id, "preference", value, source="user")
 
         need = re.search(r"\bi need\s+([^.!?\n]{3,240})", text, re.IGNORECASE)
         if need:
-            self.store.upsert_memory(session_id, "need", need.group(1).strip())
+            value = need.group(1).strip()
+            self.store.upsert_memory(session_id, "need", value)
+            self.store.upsert_fact(session_id, "need", value, source="user")
 
 
 def _format_fact(fact: MemoryFact) -> str:
@@ -1110,6 +1244,36 @@ def _extract_dictionary_term(text: str) -> str:
     return ""
 
 
+def _extract_research_query(text: str) -> str:
+    m = re.search(r"\b(?:research pipeline|run research|literature scan)\s+(?:for|on)?\s*(.+)$", text, re.IGNORECASE)
+    if m:
+        q = m.group(1).strip()
+        if q:
+            return q
+    return text.strip()
+
+
+def _extract_doc_pipeline_query(text: str) -> str:
+    m = re.search(r"\b(?:doc pipeline|document pipeline|evidence sweep)\s+(?:for|on)?\s*(.+)$", text, re.IGNORECASE)
+    if m:
+        q = m.group(1).strip()
+        if q:
+            return q
+    return text.strip()
+
+
+def _extract_folder_audit_path(text: str) -> str:
+    m = re.search(r"\b(?:folder audit|audit folder|repo audit|audit repo)\s+(?:in|on|for)?\s*(.+)$", text, re.IGNORECASE)
+    if not m:
+        return "."
+    raw = m.group(1).strip().strip("`\"")
+    if not raw:
+        return "."
+    if raw.lower() in {"this", "here", "current", "repo", "repository"}:
+        return "."
+    return raw
+
+
 def _extract_citations(provenance: list[dict[str, object]]) -> list[dict[str, object]]:
     citations: list[dict[str, object]] = []
     seen: set[tuple[str, str, str]] = set()
@@ -1155,15 +1319,56 @@ def _tokenize_for_match(text: str) -> list[str]:
     return [t for t in re.findall(r"[a-z][a-z0-9_\-]{2,}", text.lower()) if t not in {"the", "and", "for", "with"}]
 
 
-def _attach_evidence_block(answer: str, evidence: list[dict[str, object]]) -> str:
-    lines = [answer.strip(), "", "Evidence Objects:"]
+def _render_evidence_answer(user_text: str, evidence: list[dict[str, object]], strict_facts: bool) -> str:
+    if not evidence:
+        if strict_facts:
+            return (
+                "Evidence Mode is ON and no source-backed snippets were collected. "
+                "No grounded claim can be produced for this request."
+            )
+        return "Evidence Mode is ON but no evidence objects were generated."
+
+    lines = [
+        f"Evidence-grounded response for: {user_text[:180]}",
+        "Every claim below includes at least one source and snippet.",
+        "",
+    ]
+
     for idx, item in enumerate(evidence, start=1):
-        lines.append(f"{idx}. claim: {item.get('claim', '')}")
-        lines.append(f"   confidence: {item.get('confidence', 0)}")
-        sources = item.get("sources") or []
-        snippets = item.get("snippets") or []
-        if sources:
-            lines.append("   sources: " + "; ".join(str(s) for s in sources))
-        if snippets:
-            lines.append("   snippets: " + " | ".join(str(s) for s in snippets))
+        claim = str(item.get("claim") or "").strip()
+        sources = [str(s).strip() for s in (item.get("sources") or []) if str(s).strip()]
+        snippets = [str(s).strip() for s in (item.get("snippets") or []) if str(s).strip()]
+        confidence = item.get("confidence", 0)
+
+        if not claim:
+            continue
+        if not sources or not snippets:
+            continue
+
+        lines.append(f"{idx}. Claim: {claim}")
+        lines.append(f"   Source: {sources[0]}")
+        lines.append(f"   Snippet: {snippets[0][:240]}")
+        lines.append(f"   Confidence: {confidence}")
+
+    if len(lines) <= 3 and strict_facts:
+        return (
+            "Evidence Mode is ON but collected evidence objects were incomplete "
+            "(missing source or snippet). No claim is returned."
+        )
     return "\n".join(lines).strip()
+
+
+def _claim_from_snippet(snippet: str, max_chars: int = 180) -> str:
+    text = re.sub(r"\s+", " ", snippet).strip()
+    if not text:
+        return ""
+    text = re.sub(r"^[^A-Za-z0-9]+", "", text)
+    sentence = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0].strip()
+    if not sentence:
+        sentence = text
+    if len(sentence) < 8:
+        sentence = text[:max_chars]
+    sentence = sentence.strip(" -")
+    if not re.search(r"[A-Za-z]", sentence):
+        sentence = f"Source excerpt: {text[:max_chars]}"
+    return sentence[:max_chars]

@@ -62,3 +62,29 @@ def test_tasks_roundtrip(tmp_path: Path) -> None:
     listed = store.list_tasks(session_id=sid, limit=10)
     assert listed
     assert listed[0]["task_id"] == task_id
+
+
+def test_structured_memory_tables(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "ai.sqlite3")
+    sid = store.ensure_session(None, "memory session")
+
+    store.upsert_fact(sid, "goal", "build local ai", source="user")
+    store.upsert_preference(sid, "style", "concise", source="user")
+    outcome_id = store.add_outcome(sid, title="task 1", summary="done", status="completed", score=0.75)
+    artifact_id = store.add_artifact(
+        sid,
+        artifact_type="file",
+        location="/tmp/demo.txt",
+        source="/tmp/demo.txt",
+        doc_id="doc-1",
+        description="demo artifact",
+    )
+
+    assert outcome_id > 0
+    assert artifact_id > 0
+
+    snapshot = store.memory_snapshot(sid, limit=20)
+    assert snapshot["facts"]
+    assert snapshot["preferences"]
+    assert snapshot["outcomes"]
+    assert snapshot["artifacts"]

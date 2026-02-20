@@ -13,6 +13,8 @@ Local-first modular AI system with an HTML chat UI plus a Python backend for:
 - Recursive-Adic retrieval ranking (depth-Laplace weighted chunk scoring)
 - Planner/executor agent loop with task state, trace logs, and provenance
 - Evidence mode outputs (`claim -> sources -> snippets -> confidence`)
+- Callable local skills: `research_pipeline`, `doc_pipeline`, `folder_audit_pipeline`
+- Structured memory tables: `facts`, `preferences`, `outcomes`, `artifacts`
 
 ## Modes
 
@@ -112,6 +114,7 @@ If no model is available, the system still works in rules mode with tools.
 - `GET /api/sessions`
 - `GET /api/tasks`
 - `GET /api/tasks/{task_id}`
+- `GET /api/memory?session_id=<id>`
 - `GET /api/docs`
 
 ## Data Location
@@ -126,6 +129,12 @@ By default, backend data is stored in:
 - `task_id`, `session_id`, `title`, `status`
 - `created_at`, `updated_at`
 - `steps_json`, `outputs_json`, `provenance_json`
+
+Structured memory tables:
+- `facts` (`key`, `value`, `source`, timestamps)
+- `preferences` (`key`, `value`, `source`, timestamps)
+- `outcomes` (`title`, `summary`, `status`, `score`)
+- `artifacts` (`artifact_type`, `location`, `source`, `doc_id`, `description`)
 
 Configurable via env vars:
 
@@ -165,12 +174,22 @@ Further design/novelty notes:
 - `citations`
 - `provenance` (urls/files/doc ids + snippets)
 - `evidence` objects in Evidence Mode
+- `memory` (facts/preferences/outcomes/artifacts snapshot)
 
 Core flags:
 - `strict_fact_mode` / `strict_facts`
 - `evidence_mode`
 - `allow_web`, `allow_files`, `allow_docs`, `allow_downloads`
 - `max_steps`
+
+Skill tools the planner can call:
+- `skill.research_pipeline`
+- `skill.doc_pipeline`
+- `skill.folder_audit_pipeline`
+
+Evidence mode behavior:
+- Every returned claim must include a source and snippet from stored provenance.
+- If no grounded source+snippet is available, no factual claim is emitted.
 
 ## Eval Harness
 
@@ -179,7 +198,8 @@ Run:
 ```bash
 cd /Users/stevenreid/Documents/New\ project/repo_audit/rrg314/ai
 source .venv/bin/activate
-python -m backend.eval
+python -m backend.eval --task-count 24
 ```
 
-This runs a small local suite and writes JSON reports to `.ai_data/evals/`.
+This runs a 20-50 task local suite and writes JSON reports to `.ai_data/evals/`.
+Use `--task-count` (20..50) and `--use-llm` to include model-based generation.
