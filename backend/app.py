@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import secrets
+from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -15,6 +16,7 @@ from .llm import OllamaClient
 from .storage import SQLiteStore
 from .tools.docs import extract_text_from_bytes
 from .tools.filesystem import FileBrowser
+from .tools.codeexec import detect_test_command, run_command
 from .tools.vision import analyze_image_bytes, supports_image_ocr
 from .tools.web import dictionary_define, download_url, fetch_url_text, search_web
 
@@ -107,6 +109,7 @@ class AgentRequest(BaseModel):
     allow_web: bool = True
     allow_files: bool = True
     allow_docs: bool = True
+    allow_code: bool = True
     allow_downloads: bool = False
     prefer_local_core: bool = True
     max_steps: int = 8
@@ -132,6 +135,18 @@ class FileReadRequest(BaseModel):
 class FileSearchRequest(BaseModel):
     query: str
     path: str = "."
+
+
+class CodeRunRequest(BaseModel):
+    command: str = Field(min_length=1)
+    cwd: str = "."
+    timeout_sec: int = 90
+
+
+class CodeTestRequest(BaseModel):
+    cwd: str = "."
+    runner: str = "auto"
+    timeout_sec: int = 120
 
 
 @app.get("/api/health")
@@ -183,6 +198,7 @@ def run_agent(req: AgentRequest) -> dict[str, object]:
         allow_web=bool(req.allow_web),
         allow_files=bool(req.allow_files),
         allow_docs=bool(req.allow_docs),
+        allow_code=bool(req.allow_code),
         allow_downloads=bool(req.allow_downloads),
         max_steps=int(req.max_steps),
     )
@@ -370,6 +386,37 @@ def search_files(req: FileSearchRequest) -> dict[str, object]:
     try:
         hits = files.search_text(req.query, req.path)
         return {"query": req.query, "path": req.path, "hits": hits}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/code/run")
+def code_run(req: CodeRunRequest) -> dict[str, object]:
+    try:
+        cwd = files.resolve(req.cwd)
+        result = run_command(
+            req.command,
+            cwd=cwd,
+            timeout_sec=max(1, min(int(req.timeout_sec), 600)),
+        )
+        return asdict(result)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/code/test")
+def code_test(req: CodeTestRequest) -> dict[str, object]:
+    try:
+        cwd = files.resolve(req.cwd)
+        command = detect_test_command(cwd, runner=req.runner)
+        result = run_command(
+            command,
+            cwd=cwd,
+            timeout_sec=max(1, min(int(req.timeout_sec), 900)),
+        )
+        payload = asdict(result)
+        payload["detected_command"] = command
+        return payload
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

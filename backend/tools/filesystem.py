@@ -56,6 +56,19 @@ class FileBrowser:
 
         return text[:max_chars]
 
+    def write_text(self, user_path: str, text: str, append: bool = False, max_chars: int = 300000) -> dict[str, str | int]:
+        target = self.resolve(user_path)
+        if target.exists() and target.is_dir():
+            raise IsADirectoryError(str(target))
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = str(text)[:max_chars]
+        mode = "a" if append else "w"
+        with target.open(mode, encoding="utf-8") as handle:
+            handle.write(payload)
+
+        return {"path": str(target), "chars_written": len(payload)}
+
     def search_text(self, query: str, user_path: str = ".", max_hits: int = 80) -> list[dict[str, str | int]]:
         target = self.resolve(user_path)
         if not target.exists():

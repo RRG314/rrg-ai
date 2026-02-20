@@ -7,6 +7,7 @@ from pathlib import Path
 from .llm import OllamaClient
 from .skills import doc_pipeline, folder_audit_pipeline, research_pipeline
 from .storage import MemoryFact, SQLiteStore
+from .tools.codeexec import detect_test_command, run_command
 from .tools.filesystem import FileBrowser
 from .tools.web import dictionary_define, download_url, fetch_url_text, search_web
 
@@ -35,6 +36,7 @@ class AgentRunConfig:
     allow_web: bool = True
     allow_files: bool = True
     allow_docs: bool = True
+    allow_code: bool = True
     allow_downloads: bool = False
     max_steps: int = 8
 
@@ -525,6 +527,41 @@ class LocalAgent:
                         )
                     )
 
+        if cfg.allow_code:
+            run_cmd = _extract_run_command(user_text)
+            if run_cmd:
+                actions.append(
+                    AgentAction(
+                        tool="code.run",
+                        title=f"Run command: {run_cmd[:72]}",
+                        args={"command": run_cmd, "cwd": _extract_optional_cwd(user_text)},
+                        retryable=False,
+                    )
+                )
+
+            run_tests = _looks_like_test_request(user_text)
+            if run_tests:
+                actions.append(
+                    AgentAction(
+                        tool="code.test",
+                        title=f"Run tests in {_extract_optional_cwd(user_text)}",
+                        args={"cwd": _extract_optional_cwd(user_text), "runner": "auto"},
+                        retryable=True,
+                    )
+                )
+
+            code_gen = _extract_code_generation_target(user_text)
+            if code_gen:
+                target_path = str(code_gen.get("path") or "").strip()
+                actions.append(
+                    AgentAction(
+                        tool="code.generate",
+                        title=f"Generate code{' in ' + target_path if target_path else ''}",
+                        args={"request": str(code_gen.get("instructions") or user_text), "path": target_path},
+                        retryable=False,
+                    )
+                )
+
         if cfg.strict_facts and cfg.allow_web and not actions:
             actions.append(
                 AgentAction(
@@ -601,13 +638,31 @@ class LocalAgent:
                     context_blocks=context_blocks,
                     provenance=provenance,
                 )
+                call_status = str(result.get("status") or "ok")
+                detail = str(result.get("detail") or "ok")
+                if call_status != "ok":
+                    status = "retry" if attempt < attempts else "error"
+                    trace.append(
+                        {
+                            "name": action.tool,
+                            "args": action.args,
+                            "attempt": attempt,
+                            "status": status,
+                            "result_summary": detail,
+                        }
+                    )
+                    if attempt < attempts:
+                        continue
+                    result["status"] = "error"
+                    result["tool_calls"] = trace
+                    return result
                 trace.append(
                     {
                         "name": action.tool,
                         "args": action.args,
                         "attempt": attempt,
                         "status": "ok",
-                        "result_summary": str(result.get("detail") or "ok"),
+                        "result_summary": detail,
                     }
                 )
                 result["tool_calls"] = trace
@@ -902,6 +957,156 @@ class LocalAgent:
                 "status": "ok",
                 "detail": f"Retrieved {len(hits)} indexed document chunks",
                 "context_block": "Relevant indexed documents:\n" + "\n".join(rows) if rows else "",
+                "provenance": prov,
+            }
+
+        if tool == "code.generate":
+            request = str(action.args.get("request") or user_text).strip()
+            raw_path = str(action.args.get("path") or "").strip().strip("`\"")
+            status = self.llm.status()
+            generator = "template"
+            code = ""
+            if status.available:
+                try:
+                    code_prompt = (
+                        f"Write production-ready code for this request:\n{request}\n\n"
+                        "Return only code with no markdown fences."
+                    )
+                    code = self.llm.chat(
+                        messages=[{"role": "user", "content": code_prompt}],
+                        system=(
+                            "You are a local coding assistant. Generate clear, correct code. "
+                            "Output only code."
+                        ),
+                    ).strip()
+                    if code:
+                        generator = "llm"
+                except Exception:
+                    code = ""
+
+            if not code:
+                code = _template_code_for_request(request, raw_path)
+                generator = "template"
+
+            code = _strip_code_fences(code).strip()
+            if not code:
+                code = _template_code_for_request(request, raw_path)
+                generator = "template"
+
+            if raw_path:
+                write_info = self.files.write_text(raw_path, code)
+                resolved = str(write_info["path"])
+                doc_id = self.store.add_document(
+                    name=f"generated:{raw_path}",
+                    source=resolved,
+                    kind="code-generated",
+                    text=code,
+                )
+                prov = [
+                    _provenance_item(
+                        source_type="file",
+                        source=resolved,
+                        snippet=code[:320],
+                        doc_id=doc_id,
+                        path=resolved,
+                    )
+                ]
+                detail = f"Generated code via {generator} and wrote {raw_path}"
+                context_block = f"Generated code ({generator}) for {raw_path}:\n{code[:7000]}"
+            else:
+                doc_id = self.store.add_document(
+                    name="generated-code-snippet",
+                    source="local-code-generator",
+                    kind="code-generated-snippet",
+                    text=code,
+                )
+                prov = [
+                    _provenance_item(
+                        source_type="doc",
+                        source="local-code-generator",
+                        snippet=code[:320],
+                        doc_id=doc_id,
+                    )
+                ]
+                detail = f"Generated code snippet via {generator}"
+                context_block = f"Generated code snippet ({generator}):\n{code[:7000]}"
+
+            return {
+                "status": "ok",
+                "detail": detail,
+                "context_block": context_block,
+                "provenance": prov,
+            }
+
+        if tool == "code.run":
+            command = str(action.args.get("command") or "").strip()
+            raw_cwd = str(action.args.get("cwd") or ".").strip() or "."
+            if not command:
+                return {
+                    "status": "error",
+                    "detail": "Missing command for code.run",
+                    "context_block": "",
+                    "provenance": [],
+                }
+            cwd = self.files.resolve(raw_cwd)
+            result = run_command(command, cwd=cwd, timeout_sec=120)
+            rendered = _render_command_result(result)
+            doc_id = self.store.add_document(
+                name=f"command:{' '.join(result.command)[:90]}",
+                source=str(cwd),
+                kind="code-run",
+                text=rendered,
+            )
+            prov = [
+                _provenance_item(
+                    source_type="file",
+                    source=str(cwd),
+                    snippet=(result.stdout or result.stderr or rendered)[:320],
+                    doc_id=doc_id,
+                    path=str(cwd),
+                )
+            ]
+            return {
+                "status": "ok" if result.ok else "error",
+                "detail": (
+                    f"Command succeeded: {' '.join(result.command)}"
+                    if result.ok
+                    else f"Command failed (exit {result.exit_code}): {' '.join(result.command)}"
+                ),
+                "context_block": rendered,
+                "provenance": prov,
+            }
+
+        if tool == "code.test":
+            raw_cwd = str(action.args.get("cwd") or ".").strip() or "."
+            runner = str(action.args.get("runner") or "auto")
+            cwd = self.files.resolve(raw_cwd)
+            detected = detect_test_command(cwd, runner=runner)
+            result = run_command(detected, cwd=cwd, timeout_sec=240)
+            rendered = _render_command_result(result)
+            doc_id = self.store.add_document(
+                name=f"test:{' '.join(detected)[:90]}",
+                source=str(cwd),
+                kind="code-test",
+                text=rendered,
+            )
+            prov = [
+                _provenance_item(
+                    source_type="file",
+                    source=str(cwd),
+                    snippet=(result.stdout or result.stderr or rendered)[:320],
+                    doc_id=doc_id,
+                    path=str(cwd),
+                )
+            ]
+            return {
+                "status": "ok" if result.ok else "error",
+                "detail": (
+                    f"Tests passed with {' '.join(detected)}"
+                    if result.ok
+                    else f"Tests failed (exit {result.exit_code}) with {' '.join(detected)}"
+                ),
+                "context_block": rendered,
                 "provenance": prov,
             }
 
@@ -1559,6 +1764,57 @@ def _extract_folder_audit_path(text: str) -> str:
     return raw
 
 
+def _looks_like_test_request(text: str) -> bool:
+    low = text.lower()
+    return bool(
+        re.search(
+            r"\b(?:run|execute)\s+(?:all\s+)?tests?\b|\bpytest\b|\bnpm\s+test\b|\bgo\s+test\b|\bcargo\s+test\b",
+            low,
+        )
+    )
+
+
+def _extract_run_command(text: str) -> str:
+    m = re.search(r"\b(?:run|execute)\s+command\s+(.+)$", text, re.IGNORECASE)
+    if m:
+        return m.group(1).strip().strip("`")
+
+    low = text.strip().lower()
+    for prefix in ("pytest", "npm test", "go test", "cargo test", "python ", "python3 ", "node "):
+        if low.startswith(prefix):
+            return text.strip().strip("`")
+    return ""
+
+
+def _extract_optional_cwd(text: str) -> str:
+    m = re.search(r"\b(?:in|at)\s+([~./A-Za-z0-9_\-][^\n]{0,200})$", text.strip(), re.IGNORECASE)
+    if not m:
+        return "."
+    value = m.group(1).strip().strip("`\"")
+    if not value:
+        return "."
+    return value
+
+
+def _extract_code_generation_target(text: str) -> dict[str, str]:
+    patterns = [
+        r"\b(?:create|write|generate)\s+file\s+([^\s]+)\s+(?:with|for)\s+(.+)$",
+        r"\b(?:implement|write code|generate code)\s+in\s+(?:file\s+)?([^\s]+)\s*[:,-]?\s*(.+)$",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+        if m:
+            path = m.group(1).strip().strip("`\"")
+            instructions = m.group(2).strip()
+            if instructions:
+                return {"path": path, "instructions": instructions}
+
+    low = text.lower()
+    if any(token in low for token in ["write code", "generate code", "implement this", "code this"]):
+        return {"path": "", "instructions": text.strip()}
+    return {}
+
+
 def _extract_citations(provenance: list[dict[str, object]]) -> list[dict[str, object]]:
     citations: list[dict[str, object]] = []
     seen: set[tuple[str, str, str]] = set()
@@ -1598,6 +1854,80 @@ def _provenance_item(
         "url": url,
         "path": path,
     }
+
+
+def _strip_code_fences(text: str) -> str:
+    cleaned = text.strip()
+    if cleaned.startswith("```") and cleaned.endswith("```"):
+        lines = cleaned.splitlines()
+        if len(lines) >= 2:
+            return "\n".join(lines[1:-1]).strip()
+    return cleaned
+
+
+def _template_code_for_request(request: str, path: str) -> str:
+    suffix = Path(path).suffix.lower()
+    if suffix == ".py":
+        return (
+            'def main() -> None:\n'
+            '    """Auto-generated local template."""\n'
+            f"    print({request!r})\n\n"
+            'if __name__ == "__main__":\n'
+            "    main()\n"
+        )
+    if suffix in {".js", ".mjs", ".cjs"}:
+        return (
+            "// Auto-generated local template\n"
+            "function main() {\n"
+            f"  console.log({request!r});\n"
+            "}\n\n"
+            "main();\n"
+        )
+    if suffix == ".ts":
+        return (
+            "// Auto-generated local template\n"
+            "function main(): void {\n"
+            f"  console.log({request!r});\n"
+            "}\n\n"
+            "main();\n"
+        )
+    return (
+        "# Auto-generated local code snippet\n"
+        f"# Request: {request}\n"
+        "def main():\n"
+        "    pass\n"
+    )
+
+
+def _render_command_result(result: object) -> str:
+    command = getattr(result, "command", [])
+    cwd = getattr(result, "cwd", "")
+    ok = bool(getattr(result, "ok", False))
+    exit_code = int(getattr(result, "exit_code", 1))
+    duration_ms = int(getattr(result, "duration_ms", 0))
+    stdout = str(getattr(result, "stdout", "") or "")
+    stderr = str(getattr(result, "stderr", "") or "")
+    truncated = bool(getattr(result, "truncated", False))
+
+    lines = [
+        f"Command: {' '.join(command)}",
+        f"CWD: {cwd}",
+        f"Exit: {exit_code}",
+        f"Duration ms: {duration_ms}",
+        f"Status: {'ok' if ok else 'error'}",
+    ]
+    if stdout:
+        lines.append("")
+        lines.append("STDOUT:")
+        lines.append(stdout[:7000])
+    if stderr:
+        lines.append("")
+        lines.append("STDERR:")
+        lines.append(stderr[:7000])
+    if truncated:
+        lines.append("")
+        lines.append("Output truncated for safety.")
+    return "\n".join(lines)
 
 
 def _clamp(value: float, low: float, high: float) -> float:

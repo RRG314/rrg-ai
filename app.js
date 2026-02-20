@@ -160,6 +160,8 @@
       read_file: "read file /Users/stevenreid/Documents/your-file.txt",
       find_files: "search files for optimizer in /Users/stevenreid/Documents",
       analyze_image: "analyze the text in this uploaded image",
+      run_tests: "run tests in .",
+      run_command: "run command python -m pytest -q in .",
     };
 
     ui.chatInput.value = templates[action] || "";
@@ -468,6 +470,7 @@
       allow_web: true,
       allow_files: true,
       allow_docs: true,
+      allow_code: true,
       allow_downloads: true,
       max_steps: 8,
     };

@@ -9,6 +9,7 @@ Local-first modular AI system with an HTML chat UI plus a Python backend for:
 - Document upload/indexing (TXT/MD/PDF/DOCX)
 - Image OCR + image analysis prompt flow (PNG/JPG/WebP/TIFF/etc.)
 - Local file browsing, reading, and text search
+- Local code command execution and test running (allowlisted commands)
 - Optional local LLM via Ollama (no cloud dependency required)
 - Recursive-Adic retrieval ranking (depth-Laplace weighted chunk scoring)
 - Planner/executor agent loop with task state, trace logs, and provenance
@@ -118,6 +119,8 @@ If no model is available, the system still works in rules mode with tools.
 - `GET /api/files/list?path=.`
 - `POST /api/files/read`
 - `POST /api/files/search`
+- `POST /api/code/run`
+- `POST /api/code/test`
 - `GET /api/sessions`
 - `GET /api/tasks`
 - `GET /api/tasks/{task_id}`
@@ -204,13 +207,18 @@ Further design/novelty notes:
 Core flags:
 - `strict_fact_mode` / `strict_facts`
 - `evidence_mode`
-- `allow_web`, `allow_files`, `allow_docs`, `allow_downloads`
+- `allow_web`, `allow_files`, `allow_docs`, `allow_code`, `allow_downloads`
 - `max_steps`
 
 Skill tools the planner can call:
 - `skill.research_pipeline`
 - `skill.doc_pipeline`
 - `skill.folder_audit_pipeline`
+
+Code tools the planner can call:
+- `code.generate`
+- `code.run`
+- `code.test`
 
 Evidence mode behavior:
 - Every returned claim must include a source and snippet from stored provenance.
