@@ -1,0 +1,14 @@
+{
+  "id": "text_tools",
+  "name": "Text Tools",
+  "version": "1.0.0",
+  "description": "Tokenize text and produce compact lexical statistics.",
+  "entrypoint": "run.py",
+  "timeout_sec": 30,
+  "enabled": true,
+  "allow_in_agent": true,
+  "input_schema": {
+    "type": "object",
+    "description": "Provide text in input (string) or input.text (string)."
+  }
+}

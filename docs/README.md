@@ -10,6 +10,7 @@ This folder is organized for release-quality onboarding and operations.
 - `SECURITY.md` - trust boundaries, defaults, hardening guidance
 - `BENCHMARKS.md` - eval/system-check/industry benchmark behavior and interpretation
 - `RELEASE_READINESS.md` - pre-release checklist and current readiness status
+- `PLUGINS.md` - plugin architecture and authoring guide
 
 ## Research-Specific
 

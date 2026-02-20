@@ -13,9 +13,11 @@
 - Frontend UI: `index.html`, `app.js`, `style.css`
 - API layer: `backend/app.py`
 - Agent runtime: `backend/agent.py`
+- Plugin runtime: `backend/plugins.py`
 - Structured storage/retrieval: `backend/storage.py`
 - Recursive learning: `backend/recursive_learning.py`
 - Tool modules: `backend/tools/*`
+- Local plugins: `plugins/*` (manifest + entrypoint)
 - Skill pipelines: `backend/skills.py`
 - Eval/bench suites: `backend/eval.py`, `backend/industry_bench.py`, `backend/system_check.py`
 
@@ -42,6 +44,9 @@
   - `skill.research_pipeline`
   - `skill.doc_pipeline`
   - `skill.folder_audit_pipeline`
+- Plugins:
+  - `plugin.list`
+  - `plugin.run`
 
 ## Data Model (SQLite)
 

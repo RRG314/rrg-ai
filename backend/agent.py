@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .llm import OllamaClient
+from .plugins import PluginManager
 from .recursive_learning import RecursiveLearningLayer
 from .skills import doc_pipeline, folder_audit_pipeline, research_pipeline
 from .storage import MemoryFact, SQLiteStore
@@ -40,6 +41,7 @@ class AgentRunConfig:
     allow_files: bool = True
     allow_docs: bool = True
     allow_code: bool = True
+    allow_plugins: bool = True
     allow_downloads: bool = False
     max_steps: int = 8
 
@@ -59,6 +61,7 @@ class LocalAgent:
         files: FileBrowser,
         llm: OllamaClient,
         downloads_dir: Path,
+        plugins: PluginManager | None = None,
         repo_collection_root: Path | None = None,
         learning_pdf_paths: list[Path] | None = None,
     ) -> None:
@@ -67,6 +70,7 @@ class LocalAgent:
         self.llm = llm
         self.downloads_dir = Path(downloads_dir)
         self.downloads_dir.mkdir(parents=True, exist_ok=True)
+        self.plugins = plugins
         recursive_repo_root = repo_collection_root if repo_collection_root is not None else self.files.root
         self.recursive_learning = RecursiveLearningLayer(
             store=self.store,
@@ -460,6 +464,28 @@ class LocalAgent:
                 "radf pipeline",
             ]
         )
+        plugin_list_requested = _looks_like_plugin_list_request(low)
+        plugin_call = _extract_plugin_call(user_text)
+
+        if cfg.allow_plugins and plugin_list_requested:
+            actions.append(
+                AgentAction(
+                    tool="plugin.list",
+                    title="List installed plugins",
+                    args={},
+                )
+            )
+
+        if cfg.allow_plugins and plugin_call is not None:
+            plugin_id, plugin_input = plugin_call
+            actions.append(
+                AgentAction(
+                    tool="plugin.run",
+                    title=f"Run plugin {plugin_id}",
+                    args={"plugin_id": plugin_id, "input": plugin_input},
+                    retryable=True,
+                )
+            )
 
         if cfg.allow_web and research_requested:
             query = _extract_research_query(user_text)
@@ -806,6 +832,104 @@ class LocalAgent:
                 "detail": out.detail,
                 "context_block": out.context_block,
                 "provenance": out.provenance,
+            }
+
+        if tool == "plugin.list":
+            if self.plugins is None:
+                return {
+                    "status": "error",
+                    "detail": "Plugin system is not configured",
+                    "context_block": "",
+                    "provenance": [],
+                }
+            rows = self.plugins.list_plugins()
+            if not rows:
+                return {
+                    "status": "ok",
+                    "detail": "No plugins are currently installed",
+                    "context_block": "No plugins are currently installed.",
+                    "provenance": [],
+                }
+            lines = []
+            for row in rows:
+                plugin_id = str(row.get("plugin_id") or "")
+                name = str(row.get("name") or plugin_id)
+                version = str(row.get("version") or "")
+                desc = str(row.get("description") or "").strip()
+                lines.append(f"- {plugin_id} ({name} v{version})" + (f": {desc}" if desc else ""))
+            rendered = "\n".join(lines)
+            doc_id = self.store.add_document(
+                name="plugins:list",
+                source="plugin-registry",
+                kind="plugin-list",
+                text=rendered,
+            )
+            prov = [
+                _provenance_item(
+                    source_type="plugin",
+                    source="plugin-registry",
+                    snippet=rendered[:320],
+                    doc_id=doc_id,
+                )
+            ]
+            return {
+                "status": "ok",
+                "detail": f"Listed {len(rows)} plugins",
+                "context_block": f"Installed plugins:\n{rendered}",
+                "provenance": prov,
+            }
+
+        if tool == "plugin.run":
+            if self.plugins is None:
+                return {
+                    "status": "error",
+                    "detail": "Plugin system is not configured",
+                    "context_block": "",
+                    "provenance": [],
+                }
+            plugin_id = str(action.args.get("plugin_id") or "").strip()
+            plugin_input = action.args.get("input")
+            out = self.plugins.run_plugin(
+                plugin_id=plugin_id,
+                payload=plugin_input,
+                context={"session_id": session_id, "user_text": user_text},
+            )
+            rendered = out.text or out.summary
+            source = f"plugin:{out.plugin_id}"
+            doc_id = self.store.add_document(
+                name=f"plugin:{out.plugin_id}",
+                source=source,
+                kind="plugin-output",
+                text=rendered,
+            )
+            prov: list[dict[str, object]] = [
+                _provenance_item(
+                    source_type="plugin",
+                    source=source,
+                    snippet=rendered[:320],
+                    doc_id=doc_id,
+                )
+            ]
+            for item in out.provenance[:12]:
+                source_item = str(item.get("source") or source)
+                snippet = str(item.get("snippet") or "")[:320]
+                if not snippet:
+                    continue
+                prov.append(
+                    _provenance_item(
+                        source_type="plugin",
+                        source=source_item,
+                        snippet=snippet,
+                        doc_id=doc_id,
+                    )
+                )
+
+            status = "ok" if out.status == "ok" else "error"
+            return {
+                "status": status,
+                "detail": out.summary,
+                "context_block": f"Plugin {out.plugin_id} output:\n{rendered[:7000]}",
+                "provenance": prov,
             }
 
         if tool == "skill.doc_pipeline":
@@ -2082,6 +2206,37 @@ def _extract_run_command(text: str) -> str:
     return ""
 
 
+def _looks_like_plugin_list_request(low_text: str) -> bool:
+    return any(
+        token in low_text
+        for token in (
+            "list plugins",
+            "show plugins",
+            "available plugins",
+            "what plugins",
+            "plugin list",
+        )
+    )
+
+
+def _extract_plugin_call(text: str) -> tuple[str, str] | None:
+    m = re.search(
+        r"\b(?:run|execute|use)\s+plugin\s+([a-zA-Z0-9._-]+)(?:\s+(?:for|on|with|to)\s+(.+))?$",
+        text.strip(),
+        re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        plugin_id = m.group(1).strip()
+        payload = str(m.group(2) or "").strip()
+        return plugin_id, payload
+
+    m2 = re.search(r"\bplugin\s+([a-zA-Z0-9._-]+)\s*:\s*(.+)$", text.strip(), re.IGNORECASE | re.DOTALL)
+    if m2:
+        return m2.group(1).strip(), m2.group(2).strip()
+
+    return None
+
+
 def _extract_optional_cwd(text: str) -> str:
     m = re.search(r"\b(?:in|at)\s+([~./A-Za-z0-9_\-][^\n]{0,200})$", text.strip(), re.IGNORECASE)
     if not m:
@@ -2589,6 +2744,8 @@ def _infer_task_type(user_text: str, tool_calls: list[dict[str, object]]) -> str
         token in low for token in ("folder audit", "repo audit", "audit folder", "audit repo")
     ):
         return "folder_audit"
+    if any(name.startswith("plugin.") for name in names) or any(token in low for token in ("run plugin", "plugin ")):
+        return "plugin"
     if any(name.startswith("code.") or name == "math.eval" for name in names) or any(
         token in low for token in ("code", "test", "command", "compile", "debug")
     ):

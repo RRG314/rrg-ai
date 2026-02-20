@@ -45,6 +45,7 @@
                 <option value="analyze_image">Analyze an image (OCR)</option>
                 <option value="run_tests">Run project tests</option>
                 <option value="run_command">Run a code command</option>
+                <option value="run_plugin">Run a plugin</option>
               </select>
               <button id="apply-quick-action" class="ghost">Use</button>
             </div>
@@ -90,6 +91,16 @@
                 </div>
                 <div class="row">
                   <button id="run-system-check" class="ghost">Run 95% System Check</button>
+                </div>
+                <div class="row plugin-row">
+                  <select id="plugin-select">
+                    <option value="">Plugin...</option>
+                  </select>
+                  <button id="refresh-plugins" class="ghost">Refresh Plugins</button>
+                  <button id="run-plugin" class="ghost">Run Plugin</button>
+                </div>
+                <div class="row">
+                  <input id="plugin-input" type="text" placeholder="Plugin input (text or JSON)" />
                 </div>
                 <div class="row">
                   <input id="pairing-code" type="text" placeholder="Pairing code (only needed for GitHub Pages UI)" />

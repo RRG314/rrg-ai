@@ -159,6 +159,10 @@ button.warn {
   gap: 8px;
 }
 
+.toolbar .row.plugin-row {
+  grid-template-columns: 1fr auto auto;
+}
+
 .toolbar .row.row-tight {
   grid-template-columns: 1fr;
 }

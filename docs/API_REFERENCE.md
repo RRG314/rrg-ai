@@ -54,6 +54,7 @@ Request:
   "allow_files": true,
   "allow_docs": true,
   "allow_code": true,
+  "allow_plugins": true,
   "allow_downloads": false,
   "prefer_local_core": true,
   "max_steps": 8
@@ -93,6 +94,47 @@ Returns structured memory snapshot.
 
 ### `GET /api/docs`
 Returns indexed documents.
+
+## Plugin Endpoints
+
+### `GET /api/plugins`
+Lists installed plugins.
+
+Response (shape):
+```json
+{
+  "count": 1,
+  "plugins_dir": "/abs/path/plugins",
+  "plugins": [
+    {
+      "plugin_id": "text_tools",
+      "name": "Text Tools",
+      "version": "1.0.0",
+      "description": "...",
+      "entrypoint": "...",
+      "enabled": true
+    }
+  ]
+}
+```
+
+### `POST /api/plugins/run`
+Runs one plugin with payload.
+
+Request:
+```json
+{
+  "plugin_id": "text_tools",
+  "input": { "text": "recursive adic depth transforms" },
+  "session_id": "optional",
+  "timeout_sec": 90
+}
+```
+
+Response includes:
+- `ok`, `status`, `summary`, `text`
+- `provenance`, `artifacts`
+- `doc_id`, `session_id`
 
 ## Documents and Vision
 

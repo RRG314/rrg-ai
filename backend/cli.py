@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .agent import LocalAgent
 from .llm import OllamaClient
+from .plugins import PluginManager
 from .storage import SQLiteStore
 from .tools.filesystem import FileBrowser
 
@@ -15,6 +16,7 @@ def main() -> None:
     parser.add_argument("--db", default=".ai_data/ai.sqlite3")
     parser.add_argument("--downloads", default=".ai_data/downloads")
     parser.add_argument("--files-root", default=os.getenv("AI_FILES_ROOT", str(Path.home())))
+    parser.add_argument("--plugins-root", default=os.getenv("AI_PLUGINS_DIR", "plugins"))
     parser.add_argument("--model", default=os.getenv("AI_MODEL", "llama3.2:3b"))
     parser.add_argument("--ollama-url", default=os.getenv("AI_OLLAMA_URL", "http://127.0.0.1:11434"))
     parser.add_argument(
@@ -43,8 +45,12 @@ def main() -> None:
         radf_alpha=float(args.radf_alpha),
     )
     files = FileBrowser(Path(args.files_root))
+    plugins_root = Path(args.plugins_root).expanduser()
+    if not plugins_root.is_absolute():
+        plugins_root = (root / plugins_root).resolve()
+    plugins = PluginManager(plugins_root)
     llm = OllamaClient(model=args.model, base_url=args.ollama_url)
-    agent = LocalAgent(store=store, files=files, llm=llm, downloads_dir=root / args.downloads)
+    agent = LocalAgent(store=store, files=files, llm=llm, downloads_dir=root / args.downloads, plugins=plugins)
 
     session_id: str | None = None
     print("RRG AI terminal mode. Type 'exit' to quit.")

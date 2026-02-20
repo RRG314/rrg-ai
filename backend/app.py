@@ -5,6 +5,7 @@ import re
 import secrets
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from .agent import AgentRunConfig, LocalAgent
 from .llm import OllamaClient
+from .plugins import PluginManager
 from .system_check import run_system_check
 from .storage import SQLiteStore
 from .tools.docs import extract_text_from_bytes
@@ -31,6 +33,7 @@ FILES_ROOT = Path(os.getenv("AI_FILES_ROOT", str(ROOT))).expanduser().resolve()
 OLLAMA_MODEL = os.getenv("AI_MODEL", "llama3.2:3b")
 OLLAMA_URL = os.getenv("AI_OLLAMA_URL", "http://127.0.0.1:11434")
 REPO_COLLECTION_ROOT = Path(os.getenv("AI_REPO_COLLECTION_ROOT", str(ROOT.parent))).expanduser().resolve()
+PLUGINS_ROOT = Path(os.getenv("AI_PLUGINS_DIR", ROOT / "plugins")).expanduser().resolve()
 RECURSIVE_ADIC_RANKING = os.getenv("AI_RECURSIVE_ADIC_RANKING", "1").lower() not in {"0", "false", "no"}
 RADF_BETA = float(os.getenv("AI_RADF_BETA", "0.35"))
 RADF_ALPHA = float(os.getenv("AI_RADF_ALPHA", "1.5"))
@@ -114,11 +117,13 @@ store = SQLiteStore(
 )
 files = FileBrowser(FILES_ROOT)
 llm = OllamaClient(model=OLLAMA_MODEL, base_url=OLLAMA_URL)
+plugins = PluginManager(PLUGINS_ROOT)
 agent = LocalAgent(
     store=store,
     files=files,
     llm=llm,
     downloads_dir=DOWNLOADS_DIR,
+    plugins=plugins,
     repo_collection_root=REPO_COLLECTION_ROOT,
     learning_pdf_paths=LEARNING_PDF_PATHS,
 )
@@ -166,6 +171,7 @@ class AgentRequest(BaseModel):
     allow_files: bool = True
     allow_docs: bool = True
     allow_code: bool = True
+    allow_plugins: bool = True
     allow_downloads: bool = False
     prefer_local_core: bool = True
     max_steps: int = 8
@@ -212,6 +218,13 @@ class SystemCheckRequest(BaseModel):
     task_limit: int = 0
 
 
+class PluginRunRequest(BaseModel):
+    plugin_id: str = Field(min_length=1)
+    input: Any = None
+    session_id: str | None = None
+    timeout_sec: int = 60
+
+
 @app.get("/api/health")
 def health(request: Request) -> dict[str, object]:
     status = llm.status()
@@ -229,6 +242,8 @@ def health(request: Request) -> dict[str, object]:
         "radf_alpha": RADF_ALPHA,
         "recursive_learning_repo_root": str(REPO_COLLECTION_ROOT),
         "recursive_learning_pdf_paths": [str(p) for p in LEARNING_PDF_PATHS],
+        "plugins_dir": str(PLUGINS_ROOT),
+        "plugin_count": len(plugins.list_plugins()),
         "image_ocr_available": ocr_ok,
         "image_ocr_reason": ocr_reason,
         "auth_required": REQUIRE_TOKEN,
@@ -302,6 +317,7 @@ def run_agent(req: AgentRequest) -> dict[str, object]:
         allow_files=bool(req.allow_files),
         allow_docs=bool(req.allow_docs),
         allow_code=bool(req.allow_code),
+        allow_plugins=bool(req.allow_plugins),
         allow_downloads=bool(req.allow_downloads),
         max_steps=int(req.max_steps),
     )
@@ -355,6 +371,47 @@ def memory(session_id: str) -> dict[str, object]:
 @app.get("/api/docs")
 def docs() -> dict[str, object]:
     return {"documents": store.list_documents(limit=200)}
+
+
+@app.get("/api/plugins")
+def list_plugins(refresh: bool = False) -> dict[str, object]:
+    rows = plugins.list_plugins(refresh=bool(refresh))
+    return {"count": len(rows), "plugins_dir": str(PLUGINS_ROOT), "plugins": rows}
+
+
+@app.post("/api/plugins/run")
+def run_plugin(req: PluginRunRequest) -> dict[str, object]:
+    try:
+        sid = store.ensure_session(req.session_id, title=f"plugin:{req.plugin_id}") if req.session_id else None
+        out = plugins.run_plugin(
+            plugin_id=req.plugin_id,
+            payload=req.input,
+            context={"session_id": sid},
+            timeout_sec=max(1, min(int(req.timeout_sec), 300)),
+        )
+
+        source = f"plugin:{out.plugin_id}"
+        text = out.text or out.summary
+        doc_id = store.add_document(name=source, source=source, kind="plugin-output", text=text) if text else None
+
+        if sid:
+            if req.input is not None:
+                store.add_message(sid, "user", f"plugin:{req.plugin_id} input={req.input}")
+            store.add_message(sid, "assistant", f"plugin:{req.plugin_id} => {out.summary}")
+
+        return {
+            "ok": out.status == "ok",
+            "plugin_id": out.plugin_id,
+            "status": out.status,
+            "summary": out.summary,
+            "text": out.text,
+            "provenance": out.provenance,
+            "artifacts": out.artifacts,
+            "doc_id": doc_id,
+            "session_id": sid,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/upload")

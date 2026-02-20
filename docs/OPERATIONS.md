@@ -29,6 +29,15 @@ uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 - Eval reports: `.ai_data/evals/`
 - Isolated benchmark run dirs: `.ai_data/evals/runs/<run_id>/`
 
+## Plugins
+
+- Default plugin root: `plugins/`
+- Override root: `AI_PLUGINS_DIR=/path/to/plugins`
+- List plugins via API:
+  ```bash
+  curl -s -H \"X-AI-Token: <token>\" http://127.0.0.1:8000/api/plugins | jq .
+  ```
+
 ## Health Check
 
 ```bash

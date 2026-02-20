@@ -21,6 +21,10 @@
     connectBackend: document.getElementById("connect-backend"),
     runSystemCheck: document.getElementById("run-system-check"),
     systemCheckView: document.getElementById("system-check-view"),
+    pluginSelect: document.getElementById("plugin-select"),
+    pluginInput: document.getElementById("plugin-input"),
+    refreshPlugins: document.getElementById("refresh-plugins"),
+    runPlugin: document.getElementById("run-plugin"),
     uploadFile: document.getElementById("upload-file"),
     uploadButton: document.getElementById("upload-button"),
     imageFile: document.getElementById("image-file"),
@@ -56,6 +60,8 @@
     imageOCRReason: "",
     pairingRequired: false,
     pairingHint: "",
+    pluginsCount: 0,
+    pluginsDir: "",
   };
 
   const state = loadState();
@@ -71,6 +77,7 @@
   ui.evidenceMode.checked = state.evidenceMode !== false;
   ui.easyTaskInput.value = state.easyTaskInput || "";
   ui.easyTaskType.value = state.easyTaskType || "";
+  ui.pluginInput.value = state.pluginInput || "";
 
   renderAll();
   updateConnectionHint();
@@ -89,6 +96,8 @@
   ui.easyTaskType.addEventListener("change", onEasyTaskTypeChanged);
   ui.connectBackend.addEventListener("click", onConnectBackend);
   ui.runSystemCheck.addEventListener("click", onRunSystemCheck);
+  ui.refreshPlugins.addEventListener("click", onRefreshPlugins);
+  ui.runPlugin.addEventListener("click", onRunPlugin);
   ui.uploadButton.addEventListener("click", onUpload);
   ui.imageButton.addEventListener("click", onAnalyzeImage);
   ui.ingestButton.addEventListener("click", onIngest);
@@ -96,6 +105,7 @@
   ui.strictFacts.addEventListener("change", onStrictFactsChanged);
   ui.runAgent.addEventListener("change", onRunAgentChanged);
   ui.evidenceMode.addEventListener("change", onEvidenceModeChanged);
+  ui.pluginInput.addEventListener("change", onPluginInputChanged);
 
   async function onSubmit(event) {
     event.preventDefault();
@@ -189,6 +199,7 @@
       analyze_image: "analyze the text in this uploaded image",
       run_tests: "run tests in .",
       run_command: "run command python -m pytest -q in .",
+      run_plugin: "run plugin text_tools with recursive adic depth weighting improves retrieval quality",
     };
 
     ui.chatInput.value = templates[action] || "";
@@ -250,6 +261,94 @@
   function onEvidenceModeChanged() {
     state.evidenceMode = Boolean(ui.evidenceMode.checked);
     saveState();
+  }
+
+  function onPluginInputChanged() {
+    state.pluginInput = (ui.pluginInput.value || "").trim();
+    saveState();
+  }
+
+  async function onRefreshPlugins() {
+    if (!runtime.backendOnline) {
+      await checkBackend(true);
+    }
+    if (!runtime.backendOnline) {
+      appendMessage(state.currentSessionId, "ai", "Connect to local backend first to list plugins.");
+      return;
+    }
+    try {
+      const rows = await loadPlugins(true);
+      const ids = rows.map((p) => p.plugin_id).join(", ");
+      appendMessage(
+        state.currentSessionId,
+        "ai",
+        rows.length ? `Plugins refreshed (${rows.length}): ${ids}` : "Plugins refreshed: none installed."
+      );
+    } catch (err) {
+      appendMessage(state.currentSessionId, "ai", `Plugin refresh failed: ${String(err)}`);
+    }
+  }
+
+  async function onRunPlugin() {
+    if (!runtime.backendOnline) {
+      await checkBackend(true);
+    }
+    if (!runtime.backendOnline) {
+      appendMessage(state.currentSessionId, "ai", "Connect to local backend first to run plugins.");
+      return;
+    }
+
+    const pluginId = (ui.pluginSelect.value || "").trim();
+    if (!pluginId) {
+      appendMessage(state.currentSessionId, "ai", "Choose a plugin first.");
+      return;
+    }
+
+    const rawInput = (ui.pluginInput.value || "").trim();
+    state.pluginInput = rawInput;
+    saveState();
+
+    let parsedInput = rawInput;
+    if (rawInput && (rawInput.startsWith("{") || rawInput.startsWith("["))) {
+      try {
+        parsedInput = JSON.parse(rawInput);
+      } catch {
+        parsedInput = rawInput;
+      }
+    }
+
+    ui.runPlugin.disabled = true;
+    try {
+      const response = await apiFetch("/api/plugins/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          plugin_id: pluginId,
+          input: parsedInput,
+          session_id: state.currentSessionId,
+          timeout_sec: 90,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || `plugin failed (${response.status})`);
+      }
+
+      const lines = [];
+      lines.push(`Plugin ${payload.plugin_id}: ${payload.summary || payload.status}`);
+      if (payload.text) {
+        lines.push("", String(payload.text));
+      }
+      if (payload.doc_id) {
+        lines.push("", `Stored as document: ${payload.doc_id}`);
+      }
+      appendMessage(state.currentSessionId, "ai", lines.join("\n"));
+    } catch (err) {
+      appendMessage(state.currentSessionId, "ai", `Plugin run failed: ${String(err)}`);
+    } finally {
+      ui.runPlugin.disabled = false;
+      renderStatus();
+    }
   }
 
   async function onRunSystemCheck() {
@@ -518,6 +617,8 @@
         runtime.authRequired = Boolean(payload.auth_required);
         runtime.pairingRequired = Boolean(payload.pairing_required_for_origin);
         runtime.pairingHint = "";
+        runtime.pluginsCount = Number(payload.plugin_count || 0);
+        runtime.pluginsDir = payload.plugins_dir || "";
 
         if (payload.pairing_code && !state.pairingCode) {
           state.pairingCode = String(payload.pairing_code);
@@ -563,8 +664,16 @@
         if (showMessage) {
           addBubble(
             "ai",
-            `Backend connected: ${runtime.backendMode}\nurl: ${base}\nmodel: ${runtime.model || "none"}\nmodel_available: ${runtime.modelAvailable}\nauth_required: ${runtime.authRequired}\nrecursive_adic_ranking: ${runtime.recursiveAdicRanking}\nradf_alpha: ${runtime.radfAlpha}\nradf_beta: ${runtime.radfBeta}\nimage_ocr_available: ${runtime.imageOCRAvailable}`
+            `Backend connected: ${runtime.backendMode}\nurl: ${base}\nmodel: ${runtime.model || "none"}\nmodel_available: ${runtime.modelAvailable}\nauth_required: ${runtime.authRequired}\nplugins: ${runtime.pluginsCount}\nrecursive_adic_ranking: ${runtime.recursiveAdicRanking}\nradf_alpha: ${runtime.radfAlpha}\nradf_beta: ${runtime.radfBeta}\nimage_ocr_available: ${runtime.imageOCRAvailable}`
           );
+        }
+
+        try {
+          await loadPlugins(false);
+        } catch {
+          runtime.pluginsCount = 0;
+          runtime.pluginsDir = "";
+          populatePluginSelect([]);
         }
 
         connected = true;
@@ -590,6 +699,9 @@
       runtime.imageOCRReason = "Backend offline";
       runtime.pairingRequired = Boolean(pairingLock);
       runtime.pairingHint = pairingLock ? pairingLock.hint : "";
+      runtime.pluginsCount = 0;
+      runtime.pluginsDir = "";
+      populatePluginSelect([]);
 
       if (showMessage) {
         if (pairingLock) {
@@ -668,6 +780,7 @@
       allow_files: true,
       allow_docs: true,
       allow_code: true,
+      allow_plugins: true,
       allow_downloads: true,
       max_steps: 8,
     };
@@ -961,6 +1074,57 @@
     return fetch(apiUrl(path), opts);
   }
 
+  function populatePluginSelect(rows) {
+    const current = (ui.pluginSelect.value || "").trim();
+    ui.pluginSelect.innerHTML = "";
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = "Plugin...";
+    ui.pluginSelect.appendChild(empty);
+
+    rows.forEach((row) => {
+      const pluginId = String(row.plugin_id || "").trim();
+      if (!pluginId) return;
+      const option = document.createElement("option");
+      option.value = pluginId;
+      const labelName = row.name ? ` - ${row.name}` : "";
+      option.textContent = `${pluginId}${labelName}`;
+      ui.pluginSelect.appendChild(option);
+    });
+
+    if (current && rows.some((row) => String(row.plugin_id || "") === current)) {
+      ui.pluginSelect.value = current;
+    } else if (!ui.pluginSelect.value && rows.length === 1) {
+      ui.pluginSelect.value = String(rows[0].plugin_id || "");
+    }
+  }
+
+  async function loadPlugins(refresh) {
+    if (!runtime.backendOnline) {
+      runtime.pluginsCount = 0;
+      runtime.pluginsDir = "";
+      populatePluginSelect([]);
+      return [];
+    }
+
+    const suffix = refresh ? "?refresh=1" : "";
+    const response = await apiFetch(`/api/plugins${suffix}`, {
+      method: "GET",
+      cache: "no-store",
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || `plugins failed (${response.status})`);
+    }
+
+    const rows = Array.isArray(payload.plugins) ? payload.plugins : [];
+    runtime.pluginsCount = Number(payload.count || rows.length || 0);
+    runtime.pluginsDir = String(payload.plugins_dir || "");
+    populatePluginSelect(rows);
+    renderStatus();
+    return rows;
+  }
+
   function updateConnectionHint() {
     if (runtime.pairingRequired) {
       ui.connectionHint.textContent = `Backend reachable at ${runtime.backendBase || "local host"} but pairing code is required`;
@@ -1249,6 +1413,7 @@
     const evidenceMode = state.evidenceMode !== false ? "on" : "off";
     const auth = runtime.authRequired ? "token" : "off";
     const pairing = runtime.pairingRequired ? "required" : state.pairingCode ? "set" : "none";
+    const plugins = runtime.pluginsCount;
     const quality = state.lastSystemCheck
       ? `${Number(state.lastSystemCheck.score || 0).toFixed(1)}%${
           state.lastSystemCheck.meetsAllSystems ? " (all-systems)" : " (partial)"
@@ -1257,7 +1422,7 @@
     const backendBase = runtime.backendBase || state.backendUrl || "none";
 
     ui.status.textContent =
-      `backend: ${backend} | auth: ${auth} | pairing: ${pairing} | quality: ${quality} | strict facts: ${strictFacts} | evidence mode: ${evidenceMode} | run-agent: ${runAgent} | model: ${model} | image-ocr: ${imageOCR} | radf: ${radf} | url: ${backendBase} | ` +
+      `backend: ${backend} | auth: ${auth} | pairing: ${pairing} | plugins: ${plugins} | quality: ${quality} | strict facts: ${strictFacts} | evidence mode: ${evidenceMode} | run-agent: ${runAgent} | model: ${model} | image-ocr: ${imageOCR} | radf: ${radf} | url: ${backendBase} | ` +
       `docs(static): ${docs} | sessions: ${sessions} | facts: ${facts}`;
   }
 
@@ -1331,6 +1496,7 @@
           pairingCode: "",
           easyTaskType: "",
           easyTaskInput: "",
+          pluginInput: "",
           lastSystemCheck: null,
           strictFacts: true,
           runAgent: true,
@@ -1346,6 +1512,7 @@
         pairingCode: parsed.pairingCode || "",
         easyTaskType: parsed.easyTaskType || "",
         easyTaskInput: parsed.easyTaskInput || "",
+        pluginInput: parsed.pluginInput || "",
         lastSystemCheck: parsed.lastSystemCheck || null,
         strictFacts: parsed.strictFacts !== false,
         runAgent: parsed.runAgent !== false,
@@ -1360,6 +1527,7 @@
         pairingCode: "",
         easyTaskType: "",
         easyTaskInput: "",
+        pluginInput: "",
         lastSystemCheck: null,
         strictFacts: true,
         runAgent: true,

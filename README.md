@@ -15,6 +15,7 @@ The project is designed for private local use first: chat, retrieval, tools, evi
 - Planner/executor agent loop (`/api/agent`) with retries, task state, and provenance
 - Strict Fact Mode and Evidence Mode (`claim -> sources -> snippets -> confidence`)
 - Local tools for web, files, documents, OCR, code execution/testing, and math
+- Extensible local plugin system (`plugins/*`) for custom capabilities
 - Structured memory (`facts`, `preferences`, `outcomes`, `artifacts`)
 - Adaptive post-task reflection and planning heuristic updates
 - Recursive-Adic retrieval scoring integrated in storage ranking
@@ -133,11 +134,30 @@ If no Ollama model is available, the system still works in local rules/tools mod
 - `POST /api/code/run`
 - `POST /api/code/test`
 - `POST /api/system-check`
+- `GET /api/plugins`
+- `POST /api/plugins/run`
 - `GET /api/sessions`
 - `GET /api/tasks`
 - `GET /api/memory`
 
 Full request/response reference: [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md).
+
+## Plugins (Extensibility)
+
+RRG AI supports local plugins so people can add custom tools without changing core backend code.
+
+- Default plugin root: `plugins/`
+- Configure plugin root with `AI_PLUGINS_DIR`
+- Each plugin folder contains `plugin.json` + entrypoint script (for example `run.py`)
+- Plugins are discoverable via `/api/plugins`
+- Plugins can run directly via `/api/plugins/run` or via agent prompt:
+  - `run plugin text_tools with your text here`
+  - `list plugins`
+
+Included example plugin:
+- `plugins/text_tools/` (token/term stats for input text)
+
+Plugin authoring guide: [`docs/PLUGINS.md`](docs/PLUGINS.md).
 
 ## Security Defaults
 
@@ -211,6 +231,7 @@ More detail: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 - `AI_BOOTSTRAP_PAIRING_REQUIRED` (`1`/`0`)
 - `AI_REPO_COLLECTION_ROOT`
 - `AI_LEARNING_PDF_PATHS` (path-separated list)
+- `AI_PLUGINS_DIR` (default `plugins`)
 
 ## Testing
 
