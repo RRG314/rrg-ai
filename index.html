@@ -52,6 +52,18 @@
                 Strict Fact Mode (cite sources, avoid unsupported claims)
               </label>
             </div>
+            <div class="row row-tight">
+              <label class="check">
+                <input id="run-agent" type="checkbox" checked />
+                Run as Agent (planner/executor loop)
+              </label>
+            </div>
+            <div class="row row-tight">
+              <label class="check">
+                <input id="evidence-mode" type="checkbox" checked />
+                Evidence Mode (claim -> sources -> snippets -> confidence)
+              </label>
+            </div>
             <details class="advanced">
               <summary>Advanced Options</summary>
               <div class="advanced-body">
@@ -78,6 +90,27 @@
             </details>
           </section>
           <div id="chat-log" class="chat-log"></div>
+          <details class="agent-trace" id="agent-trace-panel">
+            <summary>Agent Trace</summary>
+            <div class="trace-grid">
+              <section>
+                <h3>Plan / Step Status</h3>
+                <pre id="agent-plan-view">No agent run yet.</pre>
+              </section>
+              <section>
+                <h3>Tool Calls</h3>
+                <pre id="agent-tools-view">No tool calls yet.</pre>
+              </section>
+              <section>
+                <h3>Provenance / Citations</h3>
+                <pre id="agent-provenance-view">No provenance yet.</pre>
+              </section>
+              <section>
+                <h3>Evidence Objects</h3>
+                <pre id="agent-evidence-view">No evidence yet.</pre>
+              </section>
+            </div>
+          </details>
           <form id="chat-form" class="composer">
             <textarea
               id="chat-input"

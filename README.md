@@ -11,6 +11,8 @@ Local-first modular AI system with an HTML chat UI plus a Python backend for:
 - Local file browsing, reading, and text search
 - Optional local LLM via Ollama (no cloud dependency required)
 - Recursive-Adic retrieval ranking (depth-Laplace weighted chunk scoring)
+- Planner/executor agent loop with task state, trace logs, and provenance
+- Evidence mode outputs (`claim -> sources -> snippets -> confidence`)
 
 ## Modes
 
@@ -57,6 +59,7 @@ If you still want a separate static frontend server, you can use one, and the UI
 You only need `Connect Backend` if you want to override URL manually.
 
 Strict Fact Mode is enabled by default in the UI.
+Run as Agent and Evidence Mode are enabled by default in the UI.
 Recursive-Adic retrieval ranking is enabled by default (`AI_RECURSIVE_ADIC_RANKING=1`).
 
 Simple example prompts:
@@ -95,6 +98,7 @@ If no model is available, the system still works in rules mode with tools.
 
 - `GET /api/health`
 - `POST /api/chat`
+- `POST /api/agent` (multi-step planner/executor)
 - `POST /api/upload`
 - `POST /api/ingest-url`
 - `POST /api/image/analyze` (multipart: `file`, optional `prompt`, optional `session_id`)
@@ -106,6 +110,8 @@ If no model is available, the system still works in rules mode with tools.
 - `POST /api/files/read`
 - `POST /api/files/search`
 - `GET /api/sessions`
+- `GET /api/tasks`
+- `GET /api/tasks/{task_id}`
 - `GET /api/docs`
 
 ## Data Location
@@ -114,6 +120,12 @@ By default, backend data is stored in:
 
 - `.ai_data/ai.sqlite3` (chat memory + document index)
 - `.ai_data/downloads/` (downloaded files)
+- `.ai_data/evals/` (eval reports)
+
+`tasks` are persisted in SQLite with:
+- `task_id`, `session_id`, `title`, `status`
+- `created_at`, `updated_at`
+- `steps_json`, `outputs_json`, `provenance_json`
 
 Configurable via env vars:
 
@@ -143,3 +155,31 @@ This means retrieved context is not only keyword-matched but also depth-weighted
 Further design/novelty notes:
 - `docs/recursive_adic_novelty_review.md`
 - `docs/recursive_adic_ai_systems.md`
+
+## Agent API Trace Shape
+
+`POST /api/agent` returns:
+- `answer`
+- `plan` (step list + status)
+- `tool_calls` (`name`, `args`, `attempt`, `status`, `result_summary`)
+- `citations`
+- `provenance` (urls/files/doc ids + snippets)
+- `evidence` objects in Evidence Mode
+
+Core flags:
+- `strict_fact_mode` / `strict_facts`
+- `evidence_mode`
+- `allow_web`, `allow_files`, `allow_docs`, `allow_downloads`
+- `max_steps`
+
+## Eval Harness
+
+Run:
+
+```bash
+cd /Users/stevenreid/Documents/New\ project/repo_audit/rrg314/ai
+source .venv/bin/activate
+python -m backend.eval
+```
+
+This runs a small local suite and writes JSON reports to `.ai_data/evals/`.

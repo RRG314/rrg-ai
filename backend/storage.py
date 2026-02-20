@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import threading
@@ -46,6 +47,19 @@ class MemoryFact:
     key: str
     value: str
     updated_at: int
+
+
+@dataclass
+class TaskRecord:
+    task_id: str
+    session_id: str
+    title: str
+    status: str
+    created_at: int
+    updated_at: int
+    steps: list[dict[str, object]]
+    outputs: dict[str, object]
+    provenance: list[dict[str, object]]
 
 
 class SQLiteStore:
@@ -116,6 +130,19 @@ class SQLiteStore:
                     text TEXT NOT NULL,
                     FOREIGN KEY (doc_id) REFERENCES documents(id)
                 );
+
+                CREATE TABLE IF NOT EXISTS tasks (
+                    task_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    steps_json TEXT NOT NULL,
+                    outputs_json TEXT NOT NULL,
+                    provenance_json TEXT NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES sessions(id)
+                );
                 """
             )
 
@@ -185,6 +212,149 @@ class SQLiteStore:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def create_task(
+        self,
+        session_id: str,
+        title: str,
+        status: str = "running",
+        steps: list[dict[str, object]] | None = None,
+        outputs: dict[str, object] | None = None,
+        provenance: list[dict[str, object]] | None = None,
+    ) -> str:
+        task_id = str(uuid.uuid4())
+        now = int(time.time())
+        steps = steps or []
+        outputs = outputs or {}
+        provenance = provenance or []
+
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO tasks(
+                    task_id, session_id, title, status, created_at, updated_at,
+                    steps_json, outputs_json, provenance_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    session_id,
+                    title,
+                    status,
+                    now,
+                    now,
+                    _to_json(steps),
+                    _to_json(outputs),
+                    _to_json(provenance),
+                ),
+            )
+        return task_id
+
+    def update_task(
+        self,
+        task_id: str,
+        status: str | None = None,
+        steps: list[dict[str, object]] | None = None,
+        outputs: dict[str, object] | None = None,
+        provenance: list[dict[str, object]] | None = None,
+    ) -> None:
+        now = int(time.time())
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT status, steps_json, outputs_json, provenance_json FROM tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"task not found: {task_id}")
+
+            next_status = status or str(row["status"])
+            next_steps = steps if steps is not None else _from_json(str(row["steps_json"]), fallback=[])
+            next_outputs = outputs if outputs is not None else _from_json(str(row["outputs_json"]), fallback={})
+            next_provenance = (
+                provenance if provenance is not None else _from_json(str(row["provenance_json"]), fallback=[])
+            )
+
+            conn.execute(
+                """
+                UPDATE tasks
+                SET status = ?, updated_at = ?, steps_json = ?, outputs_json = ?, provenance_json = ?
+                WHERE task_id = ?
+                """,
+                (
+                    next_status,
+                    now,
+                    _to_json(next_steps),
+                    _to_json(next_outputs),
+                    _to_json(next_provenance),
+                    task_id,
+                ),
+            )
+
+    def get_task(self, task_id: str) -> TaskRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT task_id, session_id, title, status, created_at, updated_at,
+                       steps_json, outputs_json, provenance_json
+                FROM tasks
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+        if row is None:
+            return None
+
+        return TaskRecord(
+            task_id=str(row["task_id"]),
+            session_id=str(row["session_id"]),
+            title=str(row["title"]),
+            status=str(row["status"]),
+            created_at=int(row["created_at"]),
+            updated_at=int(row["updated_at"]),
+            steps=_from_json(str(row["steps_json"]), fallback=[]),
+            outputs=_from_json(str(row["outputs_json"]), fallback={}),
+            provenance=_from_json(str(row["provenance_json"]), fallback=[]),
+        )
+
+    def list_tasks(self, session_id: str | None = None, limit: int = 100) -> list[dict[str, object]]:
+        query = (
+            """
+            SELECT task_id, session_id, title, status, created_at, updated_at,
+                   steps_json, outputs_json, provenance_json
+            FROM tasks
+            {where_clause}
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """
+        )
+        params: tuple[object, ...]
+        if session_id:
+            sql = query.format(where_clause="WHERE session_id = ?")
+            params = (session_id, limit)
+        else:
+            sql = query.format(where_clause="")
+            params = (limit,)
+
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+
+        items: list[dict[str, object]] = []
+        for row in rows:
+            items.append(
+                {
+                    "task_id": str(row["task_id"]),
+                    "session_id": str(row["session_id"]),
+                    "title": str(row["title"]),
+                    "status": str(row["status"]),
+                    "created_at": int(row["created_at"]),
+                    "updated_at": int(row["updated_at"]),
+                    "steps": _from_json(str(row["steps_json"]), fallback=[]),
+                    "outputs": _from_json(str(row["outputs_json"]), fallback={}),
+                    "provenance": _from_json(str(row["provenance_json"]), fallback=[]),
+                }
+            )
+        return items
+
     def add_document(self, name: str, source: str | None, kind: str, text: str) -> str:
         doc_id = str(uuid.uuid4())
         created_at = int(time.time())
@@ -224,6 +394,7 @@ class SQLiteStore:
             rows = conn.execute(
                 """
                 SELECT
+                    d.id AS doc_id,
                     c.text AS chunk_text,
                     c.chunk_index AS chunk_index,
                     d.name AS doc_name,
@@ -262,6 +433,7 @@ class SQLiteStore:
 
             scored.append(
                 {
+                    "doc_id": row["doc_id"],
                     "doc_name": row["doc_name"],
                     "source": row["source"] or "",
                     "text": row["chunk_text"],
@@ -306,3 +478,14 @@ def _chunk_text(text: str, size: int, overlap: int) -> Iterable[str]:
             break
         start = max(0, end - overlap)
     return chunks
+
+
+def _to_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=True)
+
+
+def _from_json(raw: str, fallback: object) -> object:
+    try:
+        return json.loads(raw)
+    except Exception:
+        return fallback

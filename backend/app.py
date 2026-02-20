@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .agent import LocalAgent
+from .agent import AgentRunConfig, LocalAgent
 from .llm import OllamaClient
 from .storage import SQLiteStore
 from .tools.docs import extract_text_from_bytes
@@ -56,6 +56,19 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     session_id: str | None = None
     strict_facts: bool = False
+
+
+class AgentRequest(BaseModel):
+    message: str = Field(min_length=1)
+    session_id: str | None = None
+    strict_fact_mode: bool = False
+    strict_facts: bool | None = None
+    evidence_mode: bool = False
+    allow_web: bool = True
+    allow_files: bool = True
+    allow_docs: bool = True
+    allow_downloads: bool = False
+    max_steps: int = 8
 
 
 class URLRequest(BaseModel):
@@ -107,9 +120,55 @@ def chat(req: ChatRequest) -> dict[str, object]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.post("/api/agent")
+def run_agent(req: AgentRequest) -> dict[str, object]:
+    strict_facts = bool(req.strict_facts) if req.strict_facts is not None else bool(req.strict_fact_mode)
+    cfg = AgentRunConfig(
+        strict_facts=strict_facts,
+        evidence_mode=bool(req.evidence_mode),
+        allow_web=bool(req.allow_web),
+        allow_files=bool(req.allow_files),
+        allow_docs=bool(req.allow_docs),
+        allow_downloads=bool(req.allow_downloads),
+        max_steps=int(req.max_steps),
+    )
+    try:
+        return agent.run_agent(req.session_id, req.message, config=cfg)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @app.get("/api/sessions")
 def sessions() -> dict[str, object]:
     return {"sessions": store.list_sessions(limit=200)}
+
+
+@app.get("/api/tasks")
+def tasks(session_id: str | None = None, limit: int = 100) -> dict[str, object]:
+    try:
+        return {"tasks": store.list_tasks(session_id=session_id, limit=max(1, min(limit, 500)))}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/tasks/{task_id}")
+def task(task_id: str) -> dict[str, object]:
+    item = store.get_task(task_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+    return {
+        "task": {
+            "task_id": item.task_id,
+            "session_id": item.session_id,
+            "title": item.title,
+            "status": item.status,
+            "created_at": item.created_at,
+            "updated_at": item.updated_at,
+            "steps": item.steps,
+            "outputs": item.outputs,
+            "provenance": item.provenance,
+        }
+    }
 
 
 @app.get("/api/docs")

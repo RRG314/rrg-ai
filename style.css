@@ -231,6 +231,46 @@ details.advanced summary {
   border-color: #f4d4af;
 }
 
+details.agent-trace {
+  border: 1px solid #d8e1ec;
+  border-radius: 10px;
+  background: #fbfdff;
+  padding: 8px;
+}
+
+details.agent-trace summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #2f4762;
+}
+
+.trace-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.trace-grid h3 {
+  margin: 0 0 6px;
+  font-size: 0.88rem;
+  color: #324960;
+}
+
+.trace-grid pre {
+  margin: 0;
+  padding: 8px;
+  border: 1px solid #d8e1ec;
+  border-radius: 8px;
+  background: #ffffff;
+  min-height: 84px;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
 .composer {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -279,6 +319,10 @@ select {
   }
 
   .toolbar .row {
+    grid-template-columns: 1fr;
+  }
+
+  .trace-grid {
     grid-template-columns: 1fr;
   }
 }

@@ -24,6 +24,13 @@
     ingestUrl: document.getElementById("ingest-url"),
     ingestButton: document.getElementById("ingest-button"),
     strictFacts: document.getElementById("strict-facts"),
+    runAgent: document.getElementById("run-agent"),
+    evidenceMode: document.getElementById("evidence-mode"),
+    agentTracePanel: document.getElementById("agent-trace-panel"),
+    agentPlanView: document.getElementById("agent-plan-view"),
+    agentToolsView: document.getElementById("agent-tools-view"),
+    agentProvenanceView: document.getElementById("agent-provenance-view"),
+    agentEvidenceView: document.getElementById("agent-evidence-view"),
   };
 
   const runtime = {
@@ -48,6 +55,8 @@
 
   ui.backendUrl.value = state.backendUrl || "";
   ui.strictFacts.checked = state.strictFacts !== false;
+  ui.runAgent.checked = state.runAgent !== false;
+  ui.evidenceMode.checked = state.evidenceMode !== false;
 
   renderAll();
   updateConnectionHint();
@@ -66,6 +75,8 @@
   ui.imageButton.addEventListener("click", onAnalyzeImage);
   ui.ingestButton.addEventListener("click", onIngest);
   ui.strictFacts.addEventListener("change", onStrictFactsChanged);
+  ui.runAgent.addEventListener("change", onRunAgentChanged);
+  ui.evidenceMode.addEventListener("change", onEvidenceModeChanged);
 
   async function onSubmit(event) {
     event.preventDefault();
@@ -83,7 +94,12 @@
 
       let answer;
       if (runtime.backendOnline) {
-        answer = await backendRespond(text, state.currentSessionId);
+        if (state.runAgent !== false) {
+          showAgentRunning(text);
+          answer = await backendAgentRespond(text, state.currentSessionId);
+        } else {
+          answer = await backendRespond(text, state.currentSessionId);
+        }
       } else {
         answer = staticRespond(text, state.currentSessionId);
       }
@@ -150,6 +166,16 @@
 
   function onStrictFactsChanged() {
     state.strictFacts = Boolean(ui.strictFacts.checked);
+    saveState();
+  }
+
+  function onRunAgentChanged() {
+    state.runAgent = Boolean(ui.runAgent.checked);
+    saveState();
+  }
+
+  function onEvidenceModeChanged() {
+    state.evidenceMode = Boolean(ui.evidenceMode.checked);
     saveState();
   }
 
@@ -412,6 +438,161 @@
     }
 
     return lines.join("\n");
+  }
+
+  async function backendAgentRespond(text, sessionId) {
+    extractFacts(text, sessionId);
+
+    const payloadRequest = {
+      message: text,
+      session_id: sessionId,
+      strict_fact_mode: Boolean(state.strictFacts),
+      strict_facts: Boolean(state.strictFacts),
+      evidence_mode: Boolean(state.evidenceMode),
+      allow_web: true,
+      allow_files: true,
+      allow_docs: true,
+      allow_downloads: true,
+      max_steps: 8,
+    };
+
+    const response = await fetch(apiUrl("/api/agent"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payloadRequest),
+    });
+
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || `agent failed (${response.status})`);
+    }
+
+    renderAgentTrace(payload);
+
+    if (payload.session_id && !state.sessions[payload.session_id]) {
+      state.sessions[payload.session_id] = {
+        id: payload.session_id,
+        label: "Chat",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messages: [],
+      };
+    }
+
+    const lines = [payload.answer || "(empty response)"];
+    lines.push("");
+    lines.push(`Agent mode: ${payload.mode || "unknown"} | task_id: ${payload.task_id || "none"}`);
+
+    const plan = Array.isArray(payload.plan) ? payload.plan : [];
+    if (plan.length) {
+      lines.push(`Plan steps: ${plan.length}`);
+      const doneCount = plan.filter((s) => s.status === "done").length;
+      lines.push(`Completed: ${doneCount}/${plan.length}`);
+    }
+
+    const toolCalls = Array.isArray(payload.tool_calls) ? payload.tool_calls : [];
+    if (toolCalls.length) {
+      lines.push(`Tool calls: ${toolCalls.length}`);
+    }
+
+    const prov = Array.isArray(payload.provenance) ? payload.provenance : [];
+    if (prov.length) {
+      lines.push(`Provenance records: ${prov.length}`);
+    }
+
+    const evidence = Array.isArray(payload.evidence) ? payload.evidence : [];
+    if (Boolean(state.evidenceMode) && evidence.length) {
+      lines.push(`Evidence objects: ${evidence.length}`);
+    }
+
+    return lines.join("\n");
+  }
+
+  function showAgentRunning(text) {
+    if (ui.agentTracePanel) {
+      ui.agentTracePanel.open = true;
+    }
+    if (ui.agentPlanView) {
+      ui.agentPlanView.textContent = `Running agent for:\n${text}\n\nStatus: planning/executing...`;
+    }
+    if (ui.agentToolsView) {
+      ui.agentToolsView.textContent = "Waiting for tool trace...";
+    }
+    if (ui.agentProvenanceView) {
+      ui.agentProvenanceView.textContent = "Waiting for provenance...";
+    }
+    if (ui.agentEvidenceView) {
+      ui.agentEvidenceView.textContent = Boolean(state.evidenceMode)
+        ? "Evidence mode active. Waiting for evidence objects..."
+        : "Evidence mode off.";
+    }
+  }
+
+  function renderAgentTrace(payload) {
+    if (ui.agentTracePanel) {
+      ui.agentTracePanel.open = true;
+    }
+
+    const plan = Array.isArray(payload.plan) ? payload.plan : [];
+    if (ui.agentPlanView) {
+      ui.agentPlanView.textContent = plan.length
+        ? plan
+            .map((step) => {
+              const id = step.step_id ?? "?";
+              const title = step.title || "step";
+              const status = step.status || "unknown";
+              const detail = step.detail ? `\n   detail: ${step.detail}` : "";
+              return `${id}. [${status}] ${title}${detail}`;
+            })
+            .join("\n")
+        : "No plan data.";
+    }
+
+    const calls = Array.isArray(payload.tool_calls) ? payload.tool_calls : [];
+    if (ui.agentToolsView) {
+      ui.agentToolsView.textContent = calls.length
+        ? calls
+            .map((call) => {
+              const name = call.name || "tool";
+              const status = call.status || "unknown";
+              const attempt = call.attempt || 1;
+              const summary = call.result_summary || "";
+              return `[${status}] ${name} (attempt ${attempt})\nargs: ${JSON.stringify(call.args || {})}\nresult: ${summary}`;
+            })
+            .join("\n\n")
+        : "No tool calls.";
+    }
+
+    const provenance = Array.isArray(payload.provenance) ? payload.provenance : [];
+    if (ui.agentProvenanceView) {
+      ui.agentProvenanceView.textContent = provenance.length
+        ? provenance
+            .map((p, idx) => {
+              const source = p.source || p.path || p.url || "unknown";
+              const doc = p.doc_id ? ` | doc_id=${p.doc_id}` : "";
+              const snippet = p.snippet ? `\nsnippet: ${String(p.snippet).slice(0, 220)}` : "";
+              return `${idx + 1}. ${p.source_type || "source"}: ${source}${doc}${snippet}`;
+            })
+            .join("\n\n")
+        : "No provenance entries.";
+    }
+
+    const evidence = Array.isArray(payload.evidence) ? payload.evidence : [];
+    if (ui.agentEvidenceView) {
+      ui.agentEvidenceView.textContent = evidence.length
+        ? evidence
+            .map((ev, idx) => {
+              const claim = ev.claim || "";
+              const conf = ev.confidence ?? 0;
+              const sources = Array.isArray(ev.sources) ? ev.sources.join("; ") : "";
+              const snippets = Array.isArray(ev.snippets)
+                ? ev.snippets.map((s) => String(s).slice(0, 120)).join(" | ")
+                : "";
+              return `${idx + 1}. claim: ${claim}\nconfidence: ${conf}\nsources: ${sources}\nsnippets: ${snippets}`;
+            })
+            .join("\n\n")
+        : "No evidence objects.";
+    }
   }
 
   function apiUrl(path) {
@@ -717,10 +898,12 @@
       ? `on(alpha=${runtime.radfAlpha.toFixed(2)},beta=${runtime.radfBeta.toFixed(2)})`
       : "off";
     const strictFacts = state.strictFacts !== false ? "on" : "off";
+    const runAgent = state.runAgent !== false ? "on" : "off";
+    const evidenceMode = state.evidenceMode !== false ? "on" : "off";
     const backendBase = runtime.backendBase || state.backendUrl || "none";
 
     ui.status.textContent =
-      `backend: ${backend} | strict facts: ${strictFacts} | model: ${model} | image-ocr: ${imageOCR} | radf: ${radf} | url: ${backendBase} | ` +
+      `backend: ${backend} | strict facts: ${strictFacts} | evidence mode: ${evidenceMode} | run-agent: ${runAgent} | model: ${model} | image-ocr: ${imageOCR} | radf: ${radf} | url: ${backendBase} | ` +
       `docs(static): ${docs} | sessions: ${sessions} | facts: ${facts}`;
   }
 
@@ -785,7 +968,17 @@
   function loadState() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return { sessions: {}, facts: {}, currentSessionId: "", backendUrl: "", strictFacts: true };
+      if (!raw) {
+        return {
+          sessions: {},
+          facts: {},
+          currentSessionId: "",
+          backendUrl: "",
+          strictFacts: true,
+          runAgent: true,
+          evidenceMode: true,
+        };
+      }
       const parsed = JSON.parse(raw);
       return {
         sessions: parsed.sessions || {},
@@ -793,9 +986,19 @@
         currentSessionId: parsed.currentSessionId || "",
         backendUrl: parsed.backendUrl || "",
         strictFacts: parsed.strictFacts !== false,
+        runAgent: parsed.runAgent !== false,
+        evidenceMode: parsed.evidenceMode !== false,
       };
     } catch {
-      return { sessions: {}, facts: {}, currentSessionId: "", backendUrl: "", strictFacts: true };
+      return {
+        sessions: {},
+        facts: {},
+        currentSessionId: "",
+        backendUrl: "",
+        strictFacts: true,
+        runAgent: true,
+        evidenceMode: true,
+      };
     }
   }
 })();

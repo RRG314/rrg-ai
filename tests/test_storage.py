@@ -28,3 +28,37 @@ def test_session_memory_and_docs(tmp_path: Path) -> None:
     assert "optimizer" in hits[0]["text"].lower()
     assert "radf_weight" in hits[0]
     assert "radf_depth" in hits[0]
+    assert "doc_id" in hits[0]
+
+
+def test_tasks_roundtrip(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "ai.sqlite3")
+    sid = store.ensure_session(None, "task session")
+
+    task_id = store.create_task(
+        sid,
+        title="demo task",
+        status="running",
+        steps=[{"step_id": 1, "title": "Collect context", "status": "pending"}],
+        outputs={"mode": "rules-agent"},
+        provenance=[{"source_type": "doc", "source": "seed", "snippet": "hello"}],
+    )
+    assert task_id
+
+    store.update_task(
+        task_id,
+        status="completed",
+        steps=[{"step_id": 1, "title": "Collect context", "status": "done"}],
+        outputs={"mode": "rules-agent", "answer": "ok"},
+        provenance=[{"source_type": "doc", "source": "seed", "snippet": "hello world"}],
+    )
+
+    item = store.get_task(task_id)
+    assert item is not None
+    assert item.status == "completed"
+    assert item.outputs.get("answer") == "ok"
+    assert item.steps and item.steps[0].get("status") == "done"
+
+    listed = store.list_tasks(session_id=sid, limit=10)
+    assert listed
+    assert listed[0]["task_id"] == task_id
