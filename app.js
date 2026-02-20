@@ -37,6 +37,8 @@
     backendOnline: false,
     backendMode: "static-browser",
     backendBase: "",
+    apiToken: "",
+    authRequired: true,
     modelAvailable: false,
     model: "",
     modelReason: "",
@@ -200,7 +202,7 @@
       const form = new FormData();
       form.append("file", file);
 
-      const response = await fetch(apiUrl("/api/upload"), {
+      const response = await apiFetch("/api/upload", {
         method: "POST",
         body: form,
       });
@@ -242,7 +244,7 @@
 
     ui.ingestButton.disabled = true;
     try {
-      const response = await fetch(apiUrl("/api/ingest-url"), {
+      const response = await apiFetch("/api/ingest-url", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url }),
@@ -298,7 +300,7 @@
       form.append("prompt", (ui.imagePrompt.value || "").trim());
       form.append("session_id", state.currentSessionId);
 
-      const response = await fetch(apiUrl("/api/image/analyze"), {
+      const response = await apiFetch("/api/image/analyze", {
         method: "POST",
         body: form,
       });
@@ -338,6 +340,9 @@
     let connected = false;
 
     for (const base of candidates) {
+      if (!isLocalBackendUrl(base)) {
+        continue;
+      }
       try {
         const payload = await healthCheck(base);
 
@@ -352,6 +357,14 @@
         runtime.radfBeta = Number(payload.radf_beta || 0.35);
         runtime.imageOCRAvailable = Boolean(payload.image_ocr_available);
         runtime.imageOCRReason = payload.image_ocr_reason || "";
+        runtime.authRequired = Boolean(payload.auth_required);
+
+        const bootstrap = await bootstrapBackend(base);
+        runtime.apiToken = bootstrap.api_token || "";
+        runtime.authRequired = Boolean(bootstrap.auth_required);
+        if (runtime.authRequired && !runtime.apiToken) {
+          throw new Error("Backend auth token unavailable");
+        }
 
         state.backendUrl = base;
         ui.backendUrl.value = base;
@@ -360,7 +373,7 @@
         if (showMessage) {
           addBubble(
             "ai",
-            `Backend connected: ${runtime.backendMode}\nurl: ${base}\nmodel: ${runtime.model || "none"}\nmodel_available: ${runtime.modelAvailable}\nrecursive_adic_ranking: ${runtime.recursiveAdicRanking}\nradf_alpha: ${runtime.radfAlpha}\nradf_beta: ${runtime.radfBeta}\nimage_ocr_available: ${runtime.imageOCRAvailable}`
+            `Backend connected: ${runtime.backendMode}\nurl: ${base}\nmodel: ${runtime.model || "none"}\nmodel_available: ${runtime.modelAvailable}\nauth_required: ${runtime.authRequired}\nrecursive_adic_ranking: ${runtime.recursiveAdicRanking}\nradf_alpha: ${runtime.radfAlpha}\nradf_beta: ${runtime.radfBeta}\nimage_ocr_available: ${runtime.imageOCRAvailable}`
           );
         }
 
@@ -375,6 +388,8 @@
       runtime.backendOnline = false;
       runtime.backendMode = "static-browser";
       runtime.backendBase = "";
+      runtime.apiToken = "";
+      runtime.authRequired = true;
       runtime.modelAvailable = false;
       runtime.model = "";
       runtime.modelReason = "No backend candidate responded";
@@ -387,7 +402,7 @@
       if (showMessage) {
         addBubble(
           "ai",
-          "Still not connected.\nRun this once in Terminal:\ncd /Users/stevenreid/Documents/New\\ project/repo_audit/rrg314/ai\n./start_local_ai.sh"
+          "Still not connected to a local backend.\nRun this once in Terminal:\ncd /Users/stevenreid/Documents/New\\ project/repo_audit/rrg314/ai\n./start_local_ai.sh"
         );
       }
     }
@@ -399,7 +414,7 @@
   async function backendRespond(text, sessionId) {
     extractFacts(text, sessionId);
 
-    const response = await fetch(apiUrl("/api/chat"), {
+    const response = await apiFetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -456,7 +471,7 @@
       max_steps: 8,
     };
 
-    const response = await fetch(apiUrl("/api/agent"), {
+    const response = await apiFetch("/api/agent", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payloadRequest),
@@ -624,6 +639,15 @@
     return values;
   }
 
+  function isLocalBackendUrl(base) {
+    try {
+      const url = new URL(base);
+      return url.hostname === "127.0.0.1" || url.hostname === "localhost";
+    } catch {
+      return false;
+    }
+  }
+
   async function healthCheck(base) {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 2500);
@@ -640,12 +664,38 @@
     }
   }
 
+  async function bootstrapBackend(base) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 2500);
+    try {
+      const response = await fetch(`${base}/api/bootstrap`, {
+        method: "GET",
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`bootstrap ${response.status}`);
+      return await response.json();
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  async function apiFetch(path, options = {}) {
+    const opts = { ...options };
+    const headers = new Headers(options.headers || {});
+    if (runtime.apiToken) {
+      headers.set("X-AI-Token", runtime.apiToken);
+    }
+    opts.headers = headers;
+    return fetch(apiUrl(path), opts);
+  }
+
   function updateConnectionHint() {
     if (runtime.backendOnline) {
-      ui.connectionHint.textContent = `Connected to ${runtime.backendBase}`;
+      ui.connectionHint.textContent = `Connected to local backend ${runtime.backendBase}`;
       return;
     }
-    ui.connectionHint.textContent = "Not connected. Click Auto Connect.";
+    ui.connectionHint.textContent = "Not connected to local backend. Click Auto Connect.";
   }
 
   function staticRespond(text, sessionId) {
@@ -900,10 +950,11 @@
     const strictFacts = state.strictFacts !== false ? "on" : "off";
     const runAgent = state.runAgent !== false ? "on" : "off";
     const evidenceMode = state.evidenceMode !== false ? "on" : "off";
+    const auth = runtime.authRequired ? "token" : "off";
     const backendBase = runtime.backendBase || state.backendUrl || "none";
 
     ui.status.textContent =
-      `backend: ${backend} | strict facts: ${strictFacts} | evidence mode: ${evidenceMode} | run-agent: ${runAgent} | model: ${model} | image-ocr: ${imageOCR} | radf: ${radf} | url: ${backendBase} | ` +
+      `backend: ${backend} | auth: ${auth} | strict facts: ${strictFacts} | evidence mode: ${evidenceMode} | run-agent: ${runAgent} | model: ${model} | image-ocr: ${imageOCR} | radf: ${radf} | url: ${backendBase} | ` +
       `docs(static): ${docs} | sessions: ${sessions} | facts: ${facts}`;
   }
 

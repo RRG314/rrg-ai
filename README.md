@@ -39,6 +39,12 @@ cd /Users/stevenreid/Documents/New\ project/repo_audit/rrg314/ai
 
 macOS double-click launcher: `start_local_ai.command`
 
+No-code path:
+1. Double-click `start_local_ai.command`
+2. Wait for the browser to open
+3. Click `Auto Connect`
+4. Start chatting
+
 After it starts:
 1. Open the URL it prints.
 2. Click `Auto Connect`.
@@ -145,11 +151,26 @@ Configurable via env vars:
 - `AI_RECURSIVE_ADIC_RANKING` (`1`/`0`)
 - `AI_RADF_ALPHA` (default `1.5`)
 - `AI_RADF_BETA` (default `0.35`)
+- `AI_REQUIRE_TOKEN` (`1` default, recommended)
+- `AI_ALLOWED_ORIGIN_REGEX` (CORS allowlist regex)
 
 ## GitHub Pages
 
 GitHub Pages can host the HTML UI, but full local tooling needs a Python backend.
 Static pages alone cannot securely provide unrestricted file-system and document-processing capabilities.
+
+## Privacy and Security (Important)
+
+- Your private data (`.ai_data`, uploaded docs, chat memory, evals) stays on your local machine and is not pushed to GitHub Pages.
+- Backend runs on `127.0.0.1` by default (local-only binding).
+- API token auth is enabled by default (`AI_REQUIRE_TOKEN=1`):
+  - token is auto-generated locally in `.ai_data/api_token.txt`
+  - frontend fetches it automatically from `/api/bootstrap`
+  - no manual token copy is required
+- CORS is restricted by regex (not `*`) so random websites cannot read your backend responses.
+- The UI now only auto-connects to local backends (`localhost` / `127.0.0.1`).
+
+If someone else uses the same GitHub Pages UI, they use their own local backend/data, not yours.
 
 ## Recursive-Adic Integration
 

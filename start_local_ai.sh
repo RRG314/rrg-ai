@@ -21,7 +21,8 @@ export AI_MODEL
 AI_RECURSIVE_ADIC_RANKING="${AI_RECURSIVE_ADIC_RANKING:-1}"
 AI_RADF_BETA="${AI_RADF_BETA:-0.35}"
 AI_RADF_ALPHA="${AI_RADF_ALPHA:-1.5}"
-export AI_RECURSIVE_ADIC_RANKING AI_RADF_BETA AI_RADF_ALPHA
+AI_REQUIRE_TOKEN="${AI_REQUIRE_TOKEN:-1}"
+export AI_RECURSIVE_ADIC_RANKING AI_RADF_BETA AI_RADF_ALPHA AI_REQUIRE_TOKEN
 
 OLLAMA_PID=""
 
@@ -118,6 +119,7 @@ echo "RRG AI is running."
 echo "- UI + API: ${UI_URL}"
 echo "- Model:    ${AI_MODEL}"
 echo "- RADF:     enabled=${AI_RECURSIVE_ADIC_RANKING} alpha=${AI_RADF_ALPHA} beta=${AI_RADF_BETA}"
+echo "- Security: token auth=${AI_REQUIRE_TOKEN} (auto-managed local token)"
 echo "Press Ctrl+C to stop."
 
 wait "$BACKEND_PID"

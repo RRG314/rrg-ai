@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import secrets
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -27,9 +29,31 @@ OLLAMA_URL = os.getenv("AI_OLLAMA_URL", "http://127.0.0.1:11434")
 RECURSIVE_ADIC_RANKING = os.getenv("AI_RECURSIVE_ADIC_RANKING", "1").lower() not in {"0", "false", "no"}
 RADF_BETA = float(os.getenv("AI_RADF_BETA", "0.35"))
 RADF_ALPHA = float(os.getenv("AI_RADF_ALPHA", "1.5"))
+REQUIRE_TOKEN = os.getenv("AI_REQUIRE_TOKEN", "1").lower() not in {"0", "false", "no"}
+ALLOW_ORIGIN_REGEX = os.getenv(
+    "AI_ALLOWED_ORIGIN_REGEX",
+    r"^https?://(127\.0\.0\.1|localhost)(:\d+)?$|^https://rrg314\.github\.io$",
+)
+TOKEN_PATH = DATA_DIR / "api_token.txt"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _load_or_create_token(path: Path) -> str:
+    env_token = os.getenv("AI_API_TOKEN", "").strip()
+    if env_token:
+        return env_token
+    if path.exists():
+        token = path.read_text(encoding="utf-8").strip()
+        if token:
+            return token
+    token = secrets.token_urlsafe(32)
+    path.write_text(token, encoding="utf-8")
+    return token
+
+
+API_TOKEN = _load_or_create_token(TOKEN_PATH)
 
 store = SQLiteStore(
     DB_PATH,
@@ -45,11 +69,24 @@ app = FastAPI(title="RRG AI Local Backend", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=[],
+    allow_origin_regex=ALLOW_ORIGIN_REGEX,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+AUTH_EXEMPT_PATHS = {"/api/health", "/api/bootstrap"}
+
+
+@app.middleware("http")
+async def api_auth_guard(request: Request, call_next):  # type: ignore[no-untyped-def]
+    path = request.url.path
+    if REQUIRE_TOKEN and path.startswith("/api/") and path not in AUTH_EXEMPT_PATHS:
+        token = request.headers.get("x-ai-token", "").strip()
+        if token != API_TOKEN:
+            return JSONResponse(status_code=401, content={"detail": "Unauthorized: invalid API token"})
+    return await call_next(request)
 
 
 class ChatRequest(BaseModel):
@@ -109,6 +146,18 @@ def health() -> dict[str, object]:
         "radf_alpha": RADF_ALPHA,
         "image_ocr_available": ocr_ok,
         "image_ocr_reason": ocr_reason,
+        "auth_required": REQUIRE_TOKEN,
+        "allow_origin_regex": ALLOW_ORIGIN_REGEX,
+    }
+
+
+@app.get("/api/bootstrap")
+def bootstrap() -> dict[str, object]:
+    return {
+        "ok": True,
+        "auth_required": REQUIRE_TOKEN,
+        "api_token": API_TOKEN if REQUIRE_TOKEN else "",
+        "backend": "local-python",
     }
 
 
