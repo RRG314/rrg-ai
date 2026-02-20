@@ -144,8 +144,75 @@ button.warn {
   min-height: 0;
   padding: 12px;
   display: grid;
-  grid-template-rows: 1fr auto;
+  grid-template-rows: auto 1fr auto;
   gap: 10px;
+}
+
+.toolbar {
+  display: grid;
+  gap: 8px;
+}
+
+.toolbar .row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.toolbar .row.row-tight {
+  grid-template-columns: 1fr;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.92rem;
+  color: var(--ink);
+}
+
+.hint {
+  display: flex;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid #d8e1ec;
+  border-radius: 10px;
+  background: #f8fbfe;
+  color: #2f4762;
+  font-size: 0.9rem;
+}
+
+details.advanced {
+  border: 1px solid #d8e1ec;
+  border-radius: 10px;
+  background: #fbfdff;
+  padding: 8px;
+}
+
+details.advanced summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #2f4762;
+}
+
+.advanced-body {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+#system-check-view {
+  margin: 0;
+  padding: 8px;
+  border: 1px solid #d8e1ec;
+  border-radius: 8px;
+  background: #ffffff;
+  min-height: 70px;
+  max-height: 190px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 0.82rem;
+  line-height: 1.35;
 }
 
 .chat-log {
@@ -178,6 +245,46 @@ button.warn {
   border-color: #f4d4af;
 }
 
+details.agent-trace {
+  border: 1px solid #d8e1ec;
+  border-radius: 10px;
+  background: #fbfdff;
+  padding: 8px;
+}
+
+details.agent-trace summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #2f4762;
+}
+
+.trace-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.trace-grid h3 {
+  margin: 0 0 6px;
+  font-size: 0.88rem;
+  color: #324960;
+}
+
+.trace-grid pre {
+  margin: 0;
+  padding: 8px;
+  border: 1px solid #d8e1ec;
+  border-radius: 8px;
+  background: #ffffff;
+  min-height: 84px;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
 .composer {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -193,6 +300,17 @@ textarea {
   border-radius: 10px;
   padding: 10px;
   font: inherit;
+}
+
+input[type="text"],
+input[type="file"],
+select {
+  width: 100%;
+  border: 1px solid #ccd8e5;
+  border-radius: 10px;
+  padding: 9px 10px;
+  font: inherit;
+  background: #fff;
 }
 
 @media (max-width: 900px) {
@@ -211,6 +329,14 @@ textarea {
   }
 
   .composer {
+    grid-template-columns: 1fr;
+  }
+
+  .toolbar .row {
+    grid-template-columns: 1fr;
+  }
+
+  .trace-grid {
     grid-template-columns: 1fr;
   }
 }

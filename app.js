@@ -1,5 +1,5 @@
 (function () {
-  const STORAGE_KEY = "rrg_ai_store_v1";
+  const STORAGE_KEY = "rrg_ai_store_v2";
 
   const ui = {
     chatLog: document.getElementById("chat-log"),
@@ -10,6 +10,52 @@
     sessionList: document.getElementById("session-list"),
     newSession: document.getElementById("new-session"),
     clearMemory: document.getElementById("clear-memory"),
+    autoConnect: document.getElementById("auto-connect"),
+    connectionHint: document.getElementById("connection-hint"),
+    quickAction: document.getElementById("quick-action"),
+    applyQuickAction: document.getElementById("apply-quick-action"),
+    easyTaskType: document.getElementById("easy-task-type"),
+    easyTaskInput: document.getElementById("easy-task-input"),
+    runEasyTask: document.getElementById("run-easy-task"),
+    backendUrl: document.getElementById("backend-url"),
+    connectBackend: document.getElementById("connect-backend"),
+    runSystemCheck: document.getElementById("run-system-check"),
+    systemCheckView: document.getElementById("system-check-view"),
+    uploadFile: document.getElementById("upload-file"),
+    uploadButton: document.getElementById("upload-button"),
+    imageFile: document.getElementById("image-file"),
+    imagePrompt: document.getElementById("image-prompt"),
+    imageButton: document.getElementById("image-button"),
+    ingestUrl: document.getElementById("ingest-url"),
+    ingestButton: document.getElementById("ingest-button"),
+    pairingCode: document.getElementById("pairing-code"),
+    strictFacts: document.getElementById("strict-facts"),
+    runAgent: document.getElementById("run-agent"),
+    evidenceMode: document.getElementById("evidence-mode"),
+    agentTracePanel: document.getElementById("agent-trace-panel"),
+    agentPlanView: document.getElementById("agent-plan-view"),
+    agentToolsView: document.getElementById("agent-tools-view"),
+    agentProvenanceView: document.getElementById("agent-provenance-view"),
+    agentEvidenceView: document.getElementById("agent-evidence-view"),
+    agentLearnedView: document.getElementById("agent-learned-view"),
+  };
+
+  const runtime = {
+    backendOnline: false,
+    backendMode: "static-browser",
+    backendBase: "",
+    apiToken: "",
+    authRequired: true,
+    modelAvailable: false,
+    model: "",
+    modelReason: "",
+    recursiveAdicRanking: false,
+    radfAlpha: 1.5,
+    radfBeta: 0.35,
+    imageOCRAvailable: false,
+    imageOCRReason: "",
+    pairingRequired: false,
+    pairingHint: "",
   };
 
   const state = loadState();
@@ -18,13 +64,40 @@
     saveState();
   }
 
+  ui.backendUrl.value = state.backendUrl || "";
+  ui.pairingCode.value = state.pairingCode || "";
+  ui.strictFacts.checked = state.strictFacts !== false;
+  ui.runAgent.checked = state.runAgent !== false;
+  ui.evidenceMode.checked = state.evidenceMode !== false;
+  ui.easyTaskInput.value = state.easyTaskInput || "";
+  ui.easyTaskType.value = state.easyTaskType || "";
+
   renderAll();
+  updateConnectionHint();
+  checkBackend(false);
+  window.setInterval(() => {
+    checkBackend(false);
+  }, 15000);
 
   ui.chatForm.addEventListener("submit", onSubmit);
   ui.newSession.addEventListener("click", onNewSession);
   ui.clearMemory.addEventListener("click", onClearMemory);
+  ui.autoConnect.addEventListener("click", onAutoConnect);
+  ui.applyQuickAction.addEventListener("click", onQuickAction);
+  ui.runEasyTask.addEventListener("click", onRunEasyTask);
+  ui.easyTaskInput.addEventListener("change", onEasyTaskInputChanged);
+  ui.easyTaskType.addEventListener("change", onEasyTaskTypeChanged);
+  ui.connectBackend.addEventListener("click", onConnectBackend);
+  ui.runSystemCheck.addEventListener("click", onRunSystemCheck);
+  ui.uploadButton.addEventListener("click", onUpload);
+  ui.imageButton.addEventListener("click", onAnalyzeImage);
+  ui.ingestButton.addEventListener("click", onIngest);
+  ui.pairingCode.addEventListener("change", onPairingCodeChanged);
+  ui.strictFacts.addEventListener("change", onStrictFactsChanged);
+  ui.runAgent.addEventListener("change", onRunAgentChanged);
+  ui.evidenceMode.addEventListener("change", onEvidenceModeChanged);
 
-  function onSubmit(event) {
+  async function onSubmit(event) {
     event.preventDefault();
     const text = ui.chatInput.value.trim();
     if (!text) return;
@@ -33,13 +106,30 @@
     appendMessage(state.currentSessionId, "user", text);
 
     ui.send.disabled = true;
-    setTimeout(() => {
-      const answer = respond(text, state.currentSessionId);
+    try {
+      if (!runtime.backendOnline) {
+        await checkBackend(false);
+      }
+
+      let answer;
+      if (runtime.backendOnline) {
+        if (state.runAgent !== false) {
+          showAgentRunning(text);
+          answer = await backendAgentRespond(text, state.currentSessionId);
+        } else {
+          answer = await backendRespond(text, state.currentSessionId);
+        }
+      } else {
+        answer = staticRespond(text, state.currentSessionId);
+      }
       appendMessage(state.currentSessionId, "ai", answer);
+    } catch (err) {
+      appendMessage(state.currentSessionId, "ai", `Request failed: ${String(err)}`);
+    } finally {
       ui.send.disabled = false;
       ui.chatInput.focus();
       renderAll();
-    }, 40);
+    }
   }
 
   function onNewSession() {
@@ -59,54 +149,869 @@
     state.currentSessionId = createSession("New chat");
     saveState();
     renderAll();
-    addBubble("ai", "Local memory cleared.");
+    addBubble("ai", "Local browser memory cleared.");
   }
 
-  function respond(text, sessionId) {
+  async function onConnectBackend() {
+    state.backendUrl = (ui.backendUrl.value || "").trim();
+    saveState();
+    await checkBackend(true);
+  }
+
+  async function onAutoConnect() {
+    state.backendUrl = "";
+    ui.backendUrl.value = "";
+    saveState();
+    await checkBackend(true);
+  }
+
+  function onEasyTaskInputChanged() {
+    state.easyTaskInput = (ui.easyTaskInput.value || "").trim();
+    saveState();
+  }
+
+  function onEasyTaskTypeChanged() {
+    state.easyTaskType = (ui.easyTaskType.value || "").trim();
+    saveState();
+  }
+
+  function onQuickAction() {
+    const action = (ui.quickAction.value || "").trim();
+    if (!action) return;
+
+    const templates = {
+      define: "define entropy",
+      search_web: "search the web for latest local llm benchmarks",
+      read_site: "read website https://en.wikipedia.org/wiki/Entropy_(information_theory)",
+      download_url: "download https://arxiv.org/pdf/1706.03762.pdf",
+      read_file: "read file /Users/stevenreid/Documents/your-file.txt",
+      find_files: "search files for optimizer in /Users/stevenreid/Documents",
+      analyze_image: "analyze the text in this uploaded image",
+      run_tests: "run tests in .",
+      run_command: "run command python -m pytest -q in .",
+    };
+
+    ui.chatInput.value = templates[action] || "";
+    ui.chatInput.focus();
+  }
+
+  function onRunEasyTask() {
+    const task = (ui.easyTaskType.value || "").trim();
+    const detail = (ui.easyTaskInput.value || "").trim();
+    if (!task) {
+      appendMessage(state.currentSessionId, "ai", "Choose an Easy Task first.");
+      return;
+    }
+
+    let prompt = "";
+    if (task === "learn_topic") {
+      prompt = detail
+        ? `Explain ${detail} in clear simple language with key points and practical examples.`
+        : "Explain this topic in clear simple language with key points and practical examples.";
+    } else if (task === "summarize_site") {
+      prompt = detail
+        ? `read website ${detail} and summarize the main points in plain language`
+        : "read website https://example.com and summarize the main points in plain language";
+    } else if (task === "read_file") {
+      prompt = detail ? `read file ${detail}` : "read file /Users/stevenreid/Documents/your-file.txt";
+    } else if (task === "search_web") {
+      prompt = detail ? `search the web for ${detail}` : "search the web for latest local ai benchmarks";
+    } else if (task === "define_word") {
+      prompt = detail ? `define ${detail}` : "define entropy";
+    } else if (task === "run_tests") {
+      prompt = detail ? `run tests in ${detail}` : "run tests in .";
+    }
+
+    if (!prompt) {
+      appendMessage(state.currentSessionId, "ai", "Could not build task prompt. Try another Easy Task option.");
+      return;
+    }
+
+    ui.chatInput.value = prompt;
+    ui.chatInput.focus();
+    appendMessage(state.currentSessionId, "ai", `Prepared task: ${prompt}`);
+  }
+
+  function onStrictFactsChanged() {
+    state.strictFacts = Boolean(ui.strictFacts.checked);
+    saveState();
+  }
+
+  function onRunAgentChanged() {
+    state.runAgent = Boolean(ui.runAgent.checked);
+    saveState();
+  }
+
+  function onPairingCodeChanged() {
+    state.pairingCode = (ui.pairingCode.value || "").trim();
+    saveState();
+  }
+
+  function onEvidenceModeChanged() {
+    state.evidenceMode = Boolean(ui.evidenceMode.checked);
+    saveState();
+  }
+
+  async function onRunSystemCheck() {
+    if (!runtime.backendOnline) {
+      await checkBackend(true);
+    }
+    if (!runtime.backendOnline) {
+      appendMessage(
+        state.currentSessionId,
+        "ai",
+        "System check needs the local backend. Run ./start_local_ai.sh and click Auto Connect."
+      );
+      return;
+    }
+
+    ui.runSystemCheck.disabled = true;
+    if (ui.systemCheckView) {
+      ui.systemCheckView.textContent = "Running local system check (target: 95%) ...";
+    }
+
+    try {
+      const response = await apiFetch("/api/system-check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          min_score: 95.0,
+          use_llm: false,
+          max_steps: 8,
+          task_limit: 0,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || `system check failed (${response.status})`);
+      }
+
+      const lines = [];
+      lines.push(`Score: ${payload.score}% (target ${payload.target_score}%)`);
+      lines.push(`Passed: ${payload.passed}/${payload.check_count}`);
+      lines.push(`Meets target: ${Boolean(payload.meets_target)}`);
+      lines.push(`Categories meet target: ${Boolean(payload.categories_meet_target)}`);
+      lines.push(`Meets target for all systems: ${Boolean(payload.meets_target_all_systems)}`);
+      if (payload.report_path) {
+        lines.push(`Report: ${payload.report_path}`);
+      }
+      const categories = payload.categories && typeof payload.categories === "object" ? payload.categories : {};
+      const names = Object.keys(categories).sort();
+      if (names.length) {
+        lines.push("", "By category:");
+        names.forEach((name) => {
+          const cat = categories[name] || {};
+          lines.push(`- ${name}: ${cat.accuracy}% (${cat.passed}/${cat.count})`);
+        });
+      }
+      const rendered = lines.join("\n");
+      if (ui.systemCheckView) {
+        ui.systemCheckView.textContent = rendered;
+      }
+      state.lastSystemCheck = {
+        at: Date.now(),
+        score: Number(payload.score || 0),
+        target: Number(payload.target_score || 95),
+        passed: Number(payload.passed || 0),
+        count: Number(payload.check_count || 0),
+        meets: Boolean(payload.meets_target),
+        categoriesMeet: Boolean(payload.categories_meet_target),
+        meetsAllSystems: Boolean(payload.meets_target_all_systems),
+        reportPath: String(payload.report_path || ""),
+      };
+      saveState();
+
+      appendMessage(
+        state.currentSessionId,
+        "ai",
+        `System check complete.\n${rendered}`
+      );
+    } catch (err) {
+      const msg = `System check failed: ${String(err)}`;
+      if (ui.systemCheckView) {
+        ui.systemCheckView.textContent = msg;
+      }
+      appendMessage(state.currentSessionId, "ai", msg);
+    } finally {
+      ui.runSystemCheck.disabled = false;
+      renderStatus();
+    }
+  }
+
+  async function onUpload() {
+    if (!runtime.backendOnline) {
+      appendMessage(
+        state.currentSessionId,
+        "ai",
+        "Not connected yet. Click Auto Connect first. If needed, run ./start_local_ai.sh."
+      );
+      return;
+    }
+
+    const file = ui.uploadFile.files && ui.uploadFile.files[0];
+    if (!file) {
+      appendMessage(state.currentSessionId, "ai", "Choose a file first.");
+      return;
+    }
+
+    ui.uploadButton.disabled = true;
+    try {
+      const form = new FormData();
+      form.append("file", file);
+
+      const response = await apiFetch("/api/upload", {
+        method: "POST",
+        body: form,
+      });
+
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || `upload failed (${response.status})`);
+      }
+
+      appendMessage(
+        state.currentSessionId,
+        "ai",
+        `Uploaded and indexed: ${payload.name}\nkind: ${payload.kind}\nchars: ${payload.char_count}\ndoc_id: ${payload.doc_id}`
+      );
+      ui.uploadFile.value = "";
+    } catch (err) {
+      appendMessage(state.currentSessionId, "ai", `Upload failed: ${String(err)}`);
+    } finally {
+      ui.uploadButton.disabled = false;
+      renderAll();
+    }
+  }
+
+  async function onIngest() {
+    if (!runtime.backendOnline) {
+      appendMessage(
+        state.currentSessionId,
+        "ai",
+        "Not connected yet. Click Auto Connect first. If needed, run ./start_local_ai.sh."
+      );
+      return;
+    }
+
+    const url = (ui.ingestUrl.value || "").trim();
+    if (!url) {
+      appendMessage(state.currentSessionId, "ai", "Enter a URL first.");
+      return;
+    }
+
+    ui.ingestButton.disabled = true;
+    try {
+      const response = await apiFetch("/api/ingest-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || `ingest failed (${response.status})`);
+      }
+
+      appendMessage(
+        state.currentSessionId,
+        "ai",
+        `Ingested URL: ${payload.url}\nkind: ${payload.kind}\nchars: ${payload.char_count}\ndoc_id: ${payload.doc_id}`
+      );
+      ui.ingestUrl.value = "";
+    } catch (err) {
+      appendMessage(state.currentSessionId, "ai", `URL ingest failed: ${String(err)}`);
+    } finally {
+      ui.ingestButton.disabled = false;
+      renderAll();
+    }
+  }
+
+  async function onAnalyzeImage() {
+    if (!runtime.backendOnline) {
+      appendMessage(
+        state.currentSessionId,
+        "ai",
+        "Not connected yet. Click Auto Connect first. If needed, run ./start_local_ai.sh."
+      );
+      return;
+    }
+
+    if (!runtime.imageOCRAvailable) {
+      appendMessage(
+        state.currentSessionId,
+        "ai",
+        `Image OCR is unavailable: ${runtime.imageOCRReason || "unknown reason"}`
+      );
+      return;
+    }
+
+    const file = ui.imageFile.files && ui.imageFile.files[0];
+    if (!file) {
+      appendMessage(state.currentSessionId, "ai", "Choose an image first.");
+      return;
+    }
+
+    ui.imageButton.disabled = true;
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("prompt", (ui.imagePrompt.value || "").trim());
+      form.append("session_id", state.currentSessionId);
+
+      const response = await apiFetch("/api/image/analyze", {
+        method: "POST",
+        body: form,
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || `image analyze failed (${response.status})`);
+      }
+
+      const lines = [
+        `Image analyzed: ${payload.filename}`,
+        `format: ${payload.image_format} | size: ${payload.width}x${payload.height}`,
+        `ocr chars: ${payload.ocr_char_count}`,
+      ];
+      if (payload.doc_id) {
+        lines.push(`doc_id: ${payload.doc_id}`);
+      }
+      if (payload.answer) {
+        lines.push("", `Model analysis:\n${payload.answer}`);
+      }
+      if (payload.ocr_text) {
+        lines.push("", `OCR preview:\n${String(payload.ocr_text).slice(0, 1200)}`);
+      }
+
+      appendMessage(state.currentSessionId, "ai", lines.join("\n"));
+      ui.imageFile.value = "";
+      ui.imagePrompt.value = "";
+    } catch (err) {
+      appendMessage(state.currentSessionId, "ai", `Image analysis failed: ${String(err)}`);
+    } finally {
+      ui.imageButton.disabled = false;
+      renderAll();
+    }
+  }
+
+  async function checkBackend(showMessage) {
+    const candidates = discoverBackendCandidates();
+    let connected = false;
+    let pairingLock = null;
+
+    for (const base of candidates) {
+      if (!isLocalBackendUrl(base)) {
+        continue;
+      }
+      try {
+        const payload = await healthCheck(base);
+
+        runtime.backendOnline = Boolean(payload.ok);
+        runtime.backendMode = payload.backend || "local-python";
+        runtime.backendBase = base;
+        runtime.modelAvailable = Boolean(payload.model_available);
+        runtime.model = payload.model || "";
+        runtime.modelReason = payload.model_reason || "";
+        runtime.recursiveAdicRanking = Boolean(payload.recursive_adic_ranking);
+        runtime.radfAlpha = Number(payload.radf_alpha || 1.5);
+        runtime.radfBeta = Number(payload.radf_beta || 0.35);
+        runtime.imageOCRAvailable = Boolean(payload.image_ocr_available);
+        runtime.imageOCRReason = payload.image_ocr_reason || "";
+        runtime.authRequired = Boolean(payload.auth_required);
+        runtime.pairingRequired = Boolean(payload.pairing_required_for_origin);
+        runtime.pairingHint = "";
+
+        if (payload.pairing_code && !state.pairingCode) {
+          state.pairingCode = String(payload.pairing_code);
+          ui.pairingCode.value = state.pairingCode;
+          saveState();
+        }
+
+        let bootstrap = await bootstrapBackend(base, state.pairingCode || "");
+        if (Boolean(bootstrap.pairing_required) && runtime.authRequired && !bootstrap.api_token) {
+          pairingLock = {
+            base,
+            hint:
+              bootstrap.pairing_hint ||
+              "Pairing code required. Open local backend UI or run `cat .ai_data/pairing_code.txt`.",
+          };
+
+          if (showMessage && !state.pairingCode) {
+            const entered = window.prompt(
+              "Enter pairing code for local backend (shown in terminal/local UI):",
+              ""
+            );
+            if (entered && entered.trim()) {
+              state.pairingCode = entered.trim();
+              ui.pairingCode.value = state.pairingCode;
+              saveState();
+              bootstrap = await bootstrapBackend(base, state.pairingCode || "");
+            }
+          }
+        }
+
+        runtime.apiToken = bootstrap.api_token || "";
+        runtime.authRequired = Boolean(bootstrap.auth_required);
+        runtime.pairingRequired = Boolean(bootstrap.pairing_required) && runtime.authRequired;
+        runtime.pairingHint = bootstrap.pairing_hint || "";
+        if (runtime.authRequired && !runtime.apiToken) {
+          throw new Error(runtime.pairingRequired ? "Backend pairing code required" : "Backend auth token unavailable");
+        }
+
+        state.backendUrl = base;
+        ui.backendUrl.value = base;
+        saveState();
+
+        if (showMessage) {
+          addBubble(
+            "ai",
+            `Backend connected: ${runtime.backendMode}\nurl: ${base}\nmodel: ${runtime.model || "none"}\nmodel_available: ${runtime.modelAvailable}\nauth_required: ${runtime.authRequired}\nrecursive_adic_ranking: ${runtime.recursiveAdicRanking}\nradf_alpha: ${runtime.radfAlpha}\nradf_beta: ${runtime.radfBeta}\nimage_ocr_available: ${runtime.imageOCRAvailable}`
+          );
+        }
+
+        connected = true;
+        break;
+      } catch {
+        // Try next candidate.
+      }
+    }
+
+    if (!connected) {
+      runtime.backendOnline = false;
+      runtime.backendMode = "static-browser";
+      runtime.backendBase = pairingLock && pairingLock.base ? pairingLock.base : "";
+      runtime.apiToken = "";
+      runtime.authRequired = true;
+      runtime.modelAvailable = false;
+      runtime.model = "";
+      runtime.modelReason = pairingLock ? "Pairing required to unlock token" : "No backend candidate responded";
+      runtime.recursiveAdicRanking = false;
+      runtime.radfAlpha = 1.5;
+      runtime.radfBeta = 0.35;
+      runtime.imageOCRAvailable = false;
+      runtime.imageOCRReason = "Backend offline";
+      runtime.pairingRequired = Boolean(pairingLock);
+      runtime.pairingHint = pairingLock ? pairingLock.hint : "";
+
+      if (showMessage) {
+        if (pairingLock) {
+          addBubble(
+            "ai",
+            `Backend is reachable at ${pairingLock.base} but locked.\n${pairingLock.hint}\nThen retry Auto Connect.`
+          );
+        } else {
+          addBubble(
+            "ai",
+            "Still not connected to a local backend.\nRun this once in Terminal:\ncd /Users/stevenreid/Documents/New\\ project/repo_audit/rrg314/ai\n./start_local_ai.sh"
+          );
+        }
+      }
+    }
+
+    updateConnectionHint();
+    renderStatus();
+  }
+
+  async function backendRespond(text, sessionId) {
     extractFacts(text, sessionId);
 
-    const lower = text.toLowerCase();
+    const response = await apiFetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: text,
+        session_id: sessionId,
+        strict_facts: Boolean(state.strictFacts),
+      }),
+    });
 
-    const directMemory = answerMemoryQuestion(lower, sessionId);
-    if (directMemory) return directMemory;
-
-    const tool = inferTool(text);
-    if (tool) return tool;
-
-    const planMode = shouldPlan(lower);
-    const hits = retrieve(text, 4);
-
-    const lines = [];
-    lines.push("RRG AI response");
-
-    if (planMode) {
-      lines.push("");
-      lines.push("Plan:");
-      planFor(text).forEach((step, i) => lines.push(`${i + 1}. ${step}`));
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || `chat failed (${response.status})`);
     }
 
-    if (hits.length) {
-      lines.push("");
-      lines.push("Grounding:");
-      hits.forEach((h) => lines.push(`- ${h.title}: ${h.text.slice(0, 170)}...`));
+    if (payload.session_id && !state.sessions[payload.session_id]) {
+      state.sessions[payload.session_id] = {
+        id: payload.session_id,
+        label: "Chat",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messages: [],
+      };
     }
 
-    const facts = relevantFacts(text, sessionId, 2);
-    if (facts.length) {
-      lines.push("");
-      lines.push("Memory:");
-      facts.forEach((f) => lines.push(`- ${f.key}: ${f.value}`));
+    const lines = [payload.answer || "(empty response)"];
+
+    if (Array.isArray(payload.tool_events) && payload.tool_events.length) {
+      lines.push("Tools:");
+      payload.tool_events.forEach((event) => {
+        lines.push(`- [${event.status}] ${event.tool}: ${event.detail}`);
+      });
     }
 
-    if (!planMode && !hits.length) {
-      lines.push("");
-      lines.push("I can help with architecture, optimization, data handling, and implementation planning.");
+    if (!payload.model_available && payload.model_reason) {
+      lines.push(`Model status: ${payload.model_reason}`);
     }
 
     return lines.join("\n");
   }
 
-  function inferTool(text) {
+  async function backendAgentRespond(text, sessionId) {
+    extractFacts(text, sessionId);
+
+    const payloadRequest = {
+      message: text,
+      session_id: sessionId,
+      strict_fact_mode: Boolean(state.strictFacts),
+      strict_facts: Boolean(state.strictFacts),
+      evidence_mode: Boolean(state.evidenceMode),
+      prefer_local_core: true,
+      allow_web: true,
+      allow_files: true,
+      allow_docs: true,
+      allow_code: true,
+      allow_downloads: true,
+      max_steps: 8,
+    };
+
+    const response = await apiFetch("/api/agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payloadRequest),
+    });
+
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || `agent failed (${response.status})`);
+    }
+
+    renderAgentTrace(payload);
+
+    if (payload.session_id && !state.sessions[payload.session_id]) {
+      state.sessions[payload.session_id] = {
+        id: payload.session_id,
+        label: "Chat",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messages: [],
+      };
+    }
+
+    const lines = [payload.answer || "(empty response)"];
+    lines.push("");
+    lines.push(`Agent mode: ${payload.mode || "unknown"} | task_id: ${payload.task_id || "none"}`);
+    lines.push(`Local core used: ${payload.original_work_used ? "yes" : "unknown"} | llm_used: ${Boolean(payload.llm_used)}`);
+
+    const plan = Array.isArray(payload.plan) ? payload.plan : [];
+    if (plan.length) {
+      lines.push(`Plan steps: ${plan.length}`);
+      const doneCount = plan.filter((s) => s.status === "done").length;
+      lines.push(`Completed: ${doneCount}/${plan.length}`);
+    }
+
+    const toolCalls = Array.isArray(payload.tool_calls) ? payload.tool_calls : [];
+    if (toolCalls.length) {
+      lines.push(`Tool calls: ${toolCalls.length}`);
+    }
+
+    const prov = Array.isArray(payload.provenance) ? payload.provenance : [];
+    if (prov.length) {
+      lines.push(`Provenance records: ${prov.length}`);
+    }
+
+    const evidence = Array.isArray(payload.evidence) ? payload.evidence : [];
+    if (Boolean(state.evidenceMode) && evidence.length) {
+      lines.push(`Evidence objects: ${evidence.length}`);
+    }
+
+    const adaptive = payload.adaptive_update && typeof payload.adaptive_update === "object" ? payload.adaptive_update : null;
+    if (adaptive) {
+      const scoreRaw = Number(adaptive.success_score);
+      if (Number.isFinite(scoreRaw)) {
+        lines.push(`Adaptive score: ${scoreRaw.toFixed(3)} | success: ${Boolean(adaptive.task_success)}`);
+      }
+      if (adaptive.policy_update && adaptive.policy_update.summary) {
+        lines.push(`Policy update: ${adaptive.policy_update.summary}`);
+      }
+    }
+
+    return lines.join("\n");
+  }
+
+  function showAgentRunning(text) {
+    if (ui.agentTracePanel) {
+      ui.agentTracePanel.open = true;
+    }
+    if (ui.agentPlanView) {
+      ui.agentPlanView.textContent = `Running agent for:\n${text}\n\nStatus: planning/executing...`;
+    }
+    if (ui.agentToolsView) {
+      ui.agentToolsView.textContent = "Waiting for tool trace...";
+    }
+    if (ui.agentProvenanceView) {
+      ui.agentProvenanceView.textContent = "Waiting for provenance...";
+    }
+    if (ui.agentEvidenceView) {
+      ui.agentEvidenceView.textContent = Boolean(state.evidenceMode)
+        ? "Evidence mode active. Waiting for evidence objects..."
+        : "Evidence mode off.";
+    }
+    if (ui.agentLearnedView) {
+      ui.agentLearnedView.textContent = "Waiting for adaptive update...";
+    }
+  }
+
+  function renderAgentTrace(payload) {
+    if (ui.agentTracePanel) {
+      ui.agentTracePanel.open = true;
+    }
+
+    const plan = Array.isArray(payload.plan) ? payload.plan : [];
+    if (ui.agentPlanView) {
+      ui.agentPlanView.textContent = plan.length
+        ? plan
+            .map((step) => {
+              const id = step.step_id ?? "?";
+              const title = step.title || "step";
+              const status = step.status || "unknown";
+              const detail = step.detail ? `\n   detail: ${step.detail}` : "";
+              return `${id}. [${status}] ${title}${detail}`;
+            })
+            .join("\n")
+        : "No plan data.";
+    }
+
+    const calls = Array.isArray(payload.tool_calls) ? payload.tool_calls : [];
+    if (ui.agentToolsView) {
+      ui.agentToolsView.textContent = calls.length
+        ? calls
+            .map((call) => {
+              const name = call.name || "tool";
+              const status = call.status || "unknown";
+              const attempt = call.attempt || 1;
+              const summary = call.result_summary || "";
+              return `[${status}] ${name} (attempt ${attempt})\nargs: ${JSON.stringify(call.args || {})}\nresult: ${summary}`;
+            })
+            .join("\n\n")
+        : "No tool calls.";
+    }
+
+    const provenance = Array.isArray(payload.provenance) ? payload.provenance : [];
+    if (ui.agentProvenanceView) {
+      ui.agentProvenanceView.textContent = provenance.length
+        ? provenance
+            .map((p, idx) => {
+              const source = p.source || p.path || p.url || "unknown";
+              const doc = p.doc_id ? ` | doc_id=${p.doc_id}` : "";
+              const snippet = p.snippet ? `\nsnippet: ${String(p.snippet).slice(0, 220)}` : "";
+              return `${idx + 1}. ${p.source_type || "source"}: ${source}${doc}${snippet}`;
+            })
+            .join("\n\n")
+        : "No provenance entries.";
+    }
+
+    const evidence = Array.isArray(payload.evidence) ? payload.evidence : [];
+    if (ui.agentEvidenceView) {
+      ui.agentEvidenceView.textContent = evidence.length
+        ? evidence
+            .map((ev, idx) => {
+              const claim = ev.claim || "";
+              const conf = ev.confidence ?? 0;
+              const sources = Array.isArray(ev.sources) ? ev.sources.join("; ") : "";
+              const snippets = Array.isArray(ev.snippets)
+                ? ev.snippets.map((s) => String(s).slice(0, 120)).join(" | ")
+                : "";
+              return `${idx + 1}. claim: ${claim}\nconfidence: ${conf}\nsources: ${sources}\nsnippets: ${snippets}`;
+            })
+            .join("\n\n")
+        : "No evidence objects.";
+    }
+
+    const adaptive = payload.adaptive_update && typeof payload.adaptive_update === "object" ? payload.adaptive_update : null;
+    if (ui.agentLearnedView) {
+      if (!adaptive) {
+        ui.agentLearnedView.textContent = "No adaptive update returned.";
+      } else {
+        const learned = [];
+        learned.push(`Task type: ${adaptive.task_type || "unknown"}`);
+        const scoreRaw = Number(adaptive.success_score);
+        const score = Number.isFinite(scoreRaw) ? scoreRaw.toFixed(3) : "n/a";
+        learned.push(`Success: ${Boolean(adaptive.task_success)} | score: ${score}`);
+
+        const worked = Array.isArray(adaptive.worked) ? adaptive.worked : [];
+        if (worked.length) {
+          learned.push("", "Worked:");
+          worked.forEach((line) => learned.push(`- ${line}`));
+        }
+
+        const failed = Array.isArray(adaptive.failed) ? adaptive.failed : [];
+        if (failed.length) {
+          learned.push("", "Failed:");
+          failed.forEach((line) => learned.push(`- ${line}`));
+        }
+
+        const routing = adaptive.tool_routing && typeof adaptive.tool_routing === "object" ? adaptive.tool_routing : {};
+        const good = Array.isArray(routing.good) ? routing.good : [];
+        const bad = Array.isArray(routing.bad) ? routing.bad : [];
+        if (good.length) {
+          learned.push("", "Good tool choices:");
+          good.forEach((line) => learned.push(`- ${line}`));
+        }
+        if (bad.length) {
+          learned.push("", "Bad tool choices:");
+          bad.forEach((line) => learned.push(`- ${line}`));
+        }
+
+        const changes = Array.isArray(adaptive.planning_changes) ? adaptive.planning_changes : [];
+        if (changes.length) {
+          learned.push("", "Planning changes:");
+          changes.forEach((line) => learned.push(`- ${line}`));
+        }
+
+        const policy = adaptive.policy_update && typeof adaptive.policy_update === "object" ? adaptive.policy_update : null;
+        if (policy && policy.summary) {
+          learned.push("", `Policy update: ${policy.summary}`);
+        }
+
+        ui.agentLearnedView.textContent = learned.join("\n");
+      }
+    }
+  }
+
+  function apiUrl(path) {
+    const raw = (runtime.backendBase || state.backendUrl || "").trim();
+    if (!raw) return path;
+    const base = raw.endsWith("/") ? raw.slice(0, -1) : raw;
+    return `${base}${path}`;
+  }
+
+  function discoverBackendCandidates() {
+    const values = [];
+    const add = (v) => {
+      const cleaned = (v || "").trim().replace(/\/+$/, "");
+      if (!cleaned) return;
+      if (!values.includes(cleaned)) values.push(cleaned);
+    };
+
+    add(state.backendUrl || "");
+    add(ui.backendUrl.value || "");
+
+    if (window.location.protocol !== "file:") {
+      add(window.location.origin);
+    }
+
+    for (let port = 8000; port <= 8020; port += 1) {
+      add(`http://127.0.0.1:${port}`);
+      add(`http://localhost:${port}`);
+    }
+    return values;
+  }
+
+  function isLocalBackendUrl(base) {
+    try {
+      const url = new URL(base);
+      return url.hostname === "127.0.0.1" || url.hostname === "localhost";
+    } catch {
+      return false;
+    }
+  }
+
+  async function healthCheck(base) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 2500);
+    try {
+      const response = await fetch(`${base}/api/health`, {
+        method: "GET",
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`health ${response.status}`);
+      return await response.json();
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  async function bootstrapBackend(base, pairingCode) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 2500);
+    try {
+      const headers = {};
+      if (pairingCode) {
+        headers["X-AI-Pairing-Code"] = pairingCode;
+      }
+      const response = await fetch(`${base}/api/bootstrap`, {
+        method: "GET",
+        cache: "no-store",
+        headers,
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`bootstrap ${response.status}`);
+      return await response.json();
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  async function apiFetch(path, options = {}) {
+    const opts = { ...options };
+    const headers = new Headers(options.headers || {});
+    if (runtime.apiToken) {
+      headers.set("X-AI-Token", runtime.apiToken);
+    }
+    opts.headers = headers;
+    return fetch(apiUrl(path), opts);
+  }
+
+  function updateConnectionHint() {
+    if (runtime.pairingRequired) {
+      ui.connectionHint.textContent = `Backend reachable at ${runtime.backendBase || "local host"} but pairing code is required`;
+      return;
+    }
+    if (runtime.backendOnline) {
+      ui.connectionHint.textContent = `Connected to local backend ${runtime.backendBase}`;
+      return;
+    }
+    ui.connectionHint.textContent = "Not connected to local backend. Click Auto Connect.";
+  }
+
+  function staticRespond(text, sessionId) {
+    extractFacts(text, sessionId);
+
+    const lower = text.toLowerCase();
+    const directMemory = answerMemoryQuestion(lower, sessionId);
+    if (directMemory) return directMemory;
+
+    const tool = inferStaticTool(text);
+    if (tool) return tool;
+
+    const hits = retrieve(text, 4);
+    const facts = relevantFacts(text, sessionId, 2);
+
+    const lines = [
+      "Running browser-only mode right now.",
+      "For full tools, click Auto Connect (or run ./start_local_ai.sh).",
+      "",
+      "Response:",
+      "I can still provide planning and memory-based help from browser state.",
+    ];
+
+    if (state.strictFacts !== false) {
+      lines.push("Strict facts mode is ON, but static mode has limited source verification.");
+    }
+
+    if (hits.length) {
+      lines.push("", "Grounding:");
+      hits.forEach((h) => lines.push(`- ${h.title}: ${h.text.slice(0, 170)}...`));
+    }
+
+    if (facts.length) {
+      lines.push("", "Memory:");
+      facts.forEach((f) => lines.push(`- ${f.key}: ${f.value}`));
+    }
+
+    return lines.join("\n");
+  }
+
+  function inferStaticTool(text) {
     const low = text.toLowerCase().trim();
 
     const mathMatch = low.match(/(?:calculate|compute|solve|evaluate|what is)\s+([-+*/().0-9\s]{3,})$/);
@@ -127,80 +1032,6 @@
       return `[repo_search]\nno matches for: ${term}`;
     }
 
-    if (
-      low.includes("index stats") ||
-      low.includes("memory stats") ||
-      low.includes("doc count") ||
-      low.includes("how many docs")
-    ) {
-      const sessions = Object.keys(state.sessions).length;
-      const factCount = Object.values(state.facts).reduce((n, arr) => n + arr.length, 0);
-      const docs = corpus().length;
-      return `[stats]\ndocs=${docs}\nsessions=${sessions}\nfacts=${factCount}`;
-    }
-
-    return "";
-  }
-
-  function shouldPlan(low) {
-    return (
-      low.includes("step by step") ||
-      low.includes("roadmap") ||
-      low.includes("full plan") ||
-      (low.includes("optimiz") && (low.includes("data") || low.includes("system") || low.includes("architecture")))
-    );
-  }
-
-  function planFor(text) {
-    const low = text.toLowerCase();
-    const steps = [];
-
-    if (low.includes("optimiz") || low.includes("latency") || low.includes("efficiency")) {
-      steps.push("Profile runtime and identify top latency bottlenecks.");
-      steps.push("Add caching for expensive retrieval and tool operations.");
-    }
-
-    if (low.includes("data") || low.includes("pipeline") || low.includes("processing")) {
-      steps.push("Improve document chunking and metadata quality for retrieval.");
-      steps.push("Add validation and regression tests for data ingestion.");
-    }
-
-    if (low.includes("model") || low.includes("agi") || low.includes("advanced")) {
-      steps.push("Swap to a stronger open-weight model and re-run eval suite.");
-      steps.push("Track grounding and hallucination metrics per release.");
-    }
-
-    if (!steps.length) steps.push("Clarify the target capability and success metrics.");
-
-    return steps.slice(0, 6);
-  }
-
-  function answerMemoryQuestion(low, sessionId) {
-    const facts = relevantFacts(low, sessionId, 6);
-    if (!facts.length) return "";
-
-    if (low.includes("my name") && low.includes("my goal")) {
-      const name = facts.find((f) => f.key === "name");
-      const goal = facts.find((f) => f.key === "goal");
-      if (name || goal) {
-        return `From memory:\n- name: ${name ? name.value : "unknown"}\n- goal: ${goal ? goal.value : "unknown"}`;
-      }
-    }
-
-    if (low.includes("my name")) {
-      const name = facts.find((f) => f.key === "name");
-      if (name) return `From memory: name: ${name.value}`;
-    }
-
-    if (low.includes("my goal")) {
-      const goal = facts.find((f) => f.key === "goal");
-      if (goal) return `From memory: goal: ${goal.value}`;
-    }
-
-    if (low.includes("remember") || low.includes("what do you know about me")) {
-      return `From memory:\n${facts.slice(0, 4).map((f) => `- ${f.key}: ${f.value}`).join("\n")}`;
-    }
-
     return "";
   }
 
@@ -208,7 +1039,7 @@
     const q = tokenize(query);
     if (!q.length) return [];
 
-    const scored = corpus()
+    return corpus()
       .map((doc) => {
         const text = `${doc.title} ${doc.text} ${(doc.tags || []).join(" ")}`.toLowerCase();
         let score = 0;
@@ -221,8 +1052,6 @@
       .sort((a, b) => b.score - a.score)
       .slice(0, topK)
       .map((x) => x.doc);
-
-    return scored;
   }
 
   function searchCorpus(term, topK) {
@@ -285,6 +1114,27 @@
     if (pushes.length) saveState();
   }
 
+  function answerMemoryQuestion(low, sessionId) {
+    const facts = relevantFacts(low, sessionId, 6);
+    if (!facts.length) return "";
+
+    if (low.includes("my name")) {
+      const name = facts.find((f) => f.key === "name");
+      if (name) return `From memory: name: ${name.value}`;
+    }
+
+    if (low.includes("my goal")) {
+      const goal = facts.find((f) => f.key === "goal");
+      if (goal) return `From memory: goal: ${goal.value}`;
+    }
+
+    if (low.includes("remember") || low.includes("what do you know about me")) {
+      return `From memory:\n${facts.slice(0, 4).map((f) => `- ${f.key}: ${f.value}`).join("\n")}`;
+    }
+
+    return "";
+  }
+
   function relevantFacts(query, sessionId, limit) {
     const tokens = tokenize(query);
     const own = state.facts[sessionId] || [];
@@ -297,7 +1147,7 @@
         if (!byKey.has(f.key)) byKey.set(f.key, f);
       });
 
-    const ranked = [...byKey.values()]
+    return [...byKey.values()]
       .map((f) => {
         const text = `${f.key} ${f.value}`.toLowerCase();
         const overlap = tokens.reduce((n, t) => n + (text.includes(t) ? 1 : 0), 0);
@@ -306,8 +1156,6 @@
       .filter((f) => f.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);
-
-    return ranked;
   }
 
   function tokenize(text) {
@@ -335,13 +1183,15 @@
   }
 
   function appendMessage(sessionId, role, content) {
-    const session = state.sessions[sessionId] || (state.sessions[sessionId] = {
-      id: sessionId,
-      label: "Chat",
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      messages: [],
-    });
+    const session =
+      state.sessions[sessionId] ||
+      (state.sessions[sessionId] = {
+        id: sessionId,
+        label: "Chat",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messages: [],
+      });
 
     session.messages.push({ role, content, at: Date.now() });
     session.updatedAt = Date.now();
@@ -359,19 +1209,62 @@
     renderStatus();
     renderSessions();
     renderChat();
+    renderSystemCheck();
+  }
+
+  function renderSystemCheck() {
+    if (!ui.systemCheckView) return;
+    const report = state.lastSystemCheck;
+    if (!report) {
+      ui.systemCheckView.textContent = "System check has not been run yet.";
+      return;
+    }
+    const lines = [
+      `Last run: ${new Date(report.at || Date.now()).toLocaleString()}`,
+      `Score: ${Number(report.score || 0).toFixed(2)}% (target ${Number(report.target || 95).toFixed(2)}%)`,
+      `Passed: ${Number(report.passed || 0)}/${Number(report.count || 0)}`,
+      `Meets target: ${Boolean(report.meets)}`,
+      `Categories meet target: ${Boolean(report.categoriesMeet)}`,
+      `Meets target for all systems: ${Boolean(report.meetsAllSystems)}`,
+    ];
+    if (report.reportPath) {
+      lines.push(`Report: ${report.reportPath}`);
+    }
+    ui.systemCheckView.textContent = lines.join("\n");
   }
 
   function renderStatus() {
     const docs = corpus().length;
     const sessions = Object.keys(state.sessions).length;
     const facts = Object.values(state.facts).reduce((n, arr) => n + arr.length, 0);
-    ui.status.textContent = `mode: static-browser | docs: ${docs} | sessions: ${sessions} | facts: ${facts}`;
+
+    const backend = runtime.backendOnline ? "connected" : "offline";
+    const model = runtime.modelAvailable ? runtime.model : "none";
+    const imageOCR = runtime.imageOCRAvailable ? "on" : "off";
+    const radf = runtime.recursiveAdicRanking
+      ? `on(alpha=${runtime.radfAlpha.toFixed(2)},beta=${runtime.radfBeta.toFixed(2)})`
+      : "off";
+    const strictFacts = state.strictFacts !== false ? "on" : "off";
+    const runAgent = state.runAgent !== false ? "on" : "off";
+    const evidenceMode = state.evidenceMode !== false ? "on" : "off";
+    const auth = runtime.authRequired ? "token" : "off";
+    const pairing = runtime.pairingRequired ? "required" : state.pairingCode ? "set" : "none";
+    const quality = state.lastSystemCheck
+      ? `${Number(state.lastSystemCheck.score || 0).toFixed(1)}%${
+          state.lastSystemCheck.meetsAllSystems ? " (all-systems)" : " (partial)"
+        }`
+      : "not-run";
+    const backendBase = runtime.backendBase || state.backendUrl || "none";
+
+    ui.status.textContent =
+      `backend: ${backend} | auth: ${auth} | pairing: ${pairing} | quality: ${quality} | strict facts: ${strictFacts} | evidence mode: ${evidenceMode} | run-agent: ${runAgent} | model: ${model} | image-ocr: ${imageOCR} | radf: ${radf} | url: ${backendBase} | ` +
+      `docs(static): ${docs} | sessions: ${sessions} | facts: ${facts}`;
   }
 
   function renderSessions() {
     const items = Object.values(state.sessions)
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
-      .slice(0, 50);
+      .slice(0, 80);
 
     ui.sessionList.innerHTML = "";
 
@@ -393,7 +1286,7 @@
     ui.chatLog.innerHTML = "";
     const session = state.sessions[state.currentSessionId];
     if (!session || !session.messages.length) {
-      addBubble("ai", "Ready. Chat naturally. I keep local memory in your browser.");
+      addBubble("ai", "Ready. Chat naturally. Connect backend for full local AI tools.");
       return;
     }
 
@@ -429,15 +1322,49 @@
   function loadState() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return { sessions: {}, facts: {}, currentSessionId: "" };
+      if (!raw) {
+        return {
+          sessions: {},
+          facts: {},
+          currentSessionId: "",
+          backendUrl: "",
+          pairingCode: "",
+          easyTaskType: "",
+          easyTaskInput: "",
+          lastSystemCheck: null,
+          strictFacts: true,
+          runAgent: true,
+          evidenceMode: true,
+        };
+      }
       const parsed = JSON.parse(raw);
       return {
         sessions: parsed.sessions || {},
         facts: parsed.facts || {},
         currentSessionId: parsed.currentSessionId || "",
+        backendUrl: parsed.backendUrl || "",
+        pairingCode: parsed.pairingCode || "",
+        easyTaskType: parsed.easyTaskType || "",
+        easyTaskInput: parsed.easyTaskInput || "",
+        lastSystemCheck: parsed.lastSystemCheck || null,
+        strictFacts: parsed.strictFacts !== false,
+        runAgent: parsed.runAgent !== false,
+        evidenceMode: parsed.evidenceMode !== false,
       };
     } catch {
-      return { sessions: {}, facts: {}, currentSessionId: "" };
+      return {
+        sessions: {},
+        facts: {},
+        currentSessionId: "",
+        backendUrl: "",
+        pairingCode: "",
+        easyTaskType: "",
+        easyTaskInput: "",
+        lastSystemCheck: null,
+        strictFacts: true,
+        runAgent: true,
+        evidenceMode: true,
+      };
     }
   }
 })();

@@ -11,7 +11,7 @@
       <header class="topbar">
         <div>
           <h1>RRG AI</h1>
-          <p>Static GitHub Pages AI chat with persistent browser memory.</p>
+          <p>Local AI chat with privacy-by-default (local backend, local data, no cloud required).</p>
         </div>
         <div class="actions">
           <button id="new-session" class="ghost">New Chat</button>
@@ -28,11 +28,123 @@
         </aside>
 
         <section class="chat-panel">
+          <section class="toolbar">
+            <div class="row">
+              <button id="auto-connect" class="ghost">Auto Connect</button>
+              <div id="connection-hint" class="hint">Trying to connect...</div>
+            </div>
+            <div class="row">
+              <select id="quick-action">
+                <option value="">Quick Action...</option>
+                <option value="define">Define a word</option>
+                <option value="search_web">Search the web</option>
+                <option value="read_site">Read a website URL</option>
+                <option value="download_url">Download from URL</option>
+                <option value="read_file">Read a local file</option>
+                <option value="find_files">Find text in local files</option>
+                <option value="analyze_image">Analyze an image (OCR)</option>
+                <option value="run_tests">Run project tests</option>
+                <option value="run_command">Run a code command</option>
+              </select>
+              <button id="apply-quick-action" class="ghost">Use</button>
+            </div>
+            <div class="row">
+              <select id="easy-task-type">
+                <option value="">Easy Task...</option>
+                <option value="learn_topic">Learn a topic</option>
+                <option value="summarize_site">Summarize a website</option>
+                <option value="read_file">Read a file</option>
+                <option value="search_web">Search web facts</option>
+                <option value="define_word">Define a word</option>
+                <option value="run_tests">Run project tests</option>
+              </select>
+              <button id="run-easy-task" class="ghost">Do Task</button>
+            </div>
+            <div class="row">
+              <input id="easy-task-input" type="text" placeholder="Optional details (topic, URL, file path, or folder)" />
+            </div>
+            <div class="row row-tight">
+              <label class="check">
+                <input id="strict-facts" type="checkbox" checked />
+                Strict Fact Mode (cite sources, avoid unsupported claims)
+              </label>
+            </div>
+            <div class="row row-tight">
+              <label class="check">
+                <input id="run-agent" type="checkbox" checked />
+                Run as Agent (planner/executor loop)
+              </label>
+            </div>
+            <div class="row row-tight">
+              <label class="check">
+                <input id="evidence-mode" type="checkbox" checked />
+                Evidence Mode (claim -> sources -> snippets -> confidence)
+              </label>
+            </div>
+            <details class="advanced">
+              <summary>Advanced Options</summary>
+              <div class="advanced-body">
+                <div class="row">
+                  <input id="backend-url" type="text" placeholder="Backend URL (optional override)" />
+                  <button id="connect-backend" class="ghost">Connect Backend</button>
+                </div>
+                <div class="row">
+                  <button id="run-system-check" class="ghost">Run 95% System Check</button>
+                </div>
+                <div class="row">
+                  <input id="pairing-code" type="text" placeholder="Pairing code (only needed for GitHub Pages UI)" />
+                </div>
+                <div class="row row-tight">
+                  <pre id="system-check-view">System check has not been run yet.</pre>
+                </div>
+                <div class="row">
+                  <input id="upload-file" type="file" />
+                  <button id="upload-button" class="ghost">Upload File</button>
+                </div>
+                <div class="row">
+                  <input id="image-file" type="file" accept="image/*" />
+                  <button id="image-button" class="ghost">Analyze Image</button>
+                </div>
+                <div class="row">
+                  <input id="image-prompt" type="text" placeholder="Optional image question (example: summarize key text)" />
+                </div>
+                <div class="row">
+                  <input id="ingest-url" type="text" placeholder="Website URL to read and remember" />
+                  <button id="ingest-button" class="ghost">Read URL</button>
+                </div>
+              </div>
+            </details>
+          </section>
           <div id="chat-log" class="chat-log"></div>
+          <details class="agent-trace" id="agent-trace-panel">
+            <summary>Agent Trace</summary>
+            <div class="trace-grid">
+              <section>
+                <h3>Plan / Step Status</h3>
+                <pre id="agent-plan-view">No agent run yet.</pre>
+              </section>
+              <section>
+                <h3>Tool Calls</h3>
+                <pre id="agent-tools-view">No tool calls yet.</pre>
+              </section>
+              <section>
+                <h3>Provenance / Citations</h3>
+                <pre id="agent-provenance-view">No provenance yet.</pre>
+              </section>
+              <section>
+                <h3>Evidence Objects</h3>
+                <pre id="agent-evidence-view">No evidence yet.</pre>
+              </section>
+              <section>
+                <h3>What I Learned</h3>
+                <pre id="agent-learned-view">No adaptive update yet.</pre>
+              </section>
+            </div>
+          </details>
           <form id="chat-form" class="composer">
             <textarea
               id="chat-input"
-              placeholder="Chat normally. Example: I need an end-to-end plan to optimize my AI data pipeline."
+              placeholder="Chat naturally. Example: search the web for local llm eval frameworks and compare them."
               rows="3"
             ></textarea>
             <button type="submit" id="send">Send</button>
