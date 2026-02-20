@@ -58,6 +58,9 @@ def test_agent_loop_builds_trace_and_evidence(tmp_path: Path) -> None:
 
     assert res.get("task_id")
     assert res.get("session_id")
+    answer = str(res.get("answer") or "")
+    assert "Here's a grounded answer based on collected evidence:" in answer
+    assert "Claim:" not in answer
     assert isinstance(res.get("plan"), list) and res["plan"]
     assert isinstance(res.get("tool_calls"), list) and res["tool_calls"]
     assert isinstance(res.get("provenance"), list) and res["provenance"]

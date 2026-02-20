@@ -1202,13 +1202,40 @@ def _system_prompt(files_root: Path, strict_facts: bool, evidence_mode: bool = F
 
 
 def _fallback_answer(user_text: str, events: list[ToolEvent], context_blocks: list[str], strict_facts: bool) -> str:
-    lines = [
-        "Running in local rules mode (no local model available).",
-        "Install/start Ollama and a model for stronger free-form chat quality.",
-    ]
+    points = _collect_grounded_points(context_blocks, provenance=[], limit=6)
+    sources = _extract_sources_from_context(context_blocks, limit=8)
+    lines: list[str] = []
+
+    if points:
+        lines.append("Here's what I found from local grounded context:")
+        lines.append("")
+        lines.append(" ".join(p["text"] for p in points[:3]))
+        if len(points) > 3:
+            lines.append("")
+            lines.append("Additional points:")
+            for item in points[3:6]:
+                lines.append(f"- {item['text']}")
+    else:
+        if strict_facts:
+            lines.append(
+                "I could not collect grounded source text for that request yet, "
+                "so I am not making unsupported factual claims."
+            )
+        else:
+            lines.append(
+                "I can help with web search, website reading, file/document analysis, OCR, and persistent memory. "
+                "Ask a direct question and I will generate a full answer from the retrieved context."
+            )
 
     if strict_facts:
-        lines.append("Strict facts mode is ON: unsupported claims are blocked.")
+        lines.append("")
+        lines.append("Strict Fact Mode: only source-backed claims are included.")
+
+    if sources:
+        lines.append("")
+        lines.append("Sources:")
+        for src in sources:
+            lines.append(f"- {src}")
 
     if events:
         lines.append("")
@@ -1216,25 +1243,9 @@ def _fallback_answer(user_text: str, events: list[ToolEvent], context_blocks: li
         for event in events:
             lines.append(f"- [{event.status}] {event.tool}: {event.detail}")
 
-    if context_blocks:
-        lines.append("")
-        lines.append("Useful context:")
-        for block in context_blocks[:4]:
-            summary = block[:420].strip()
-            lines.append(f"- {summary}")
-    else:
-        lines.append("")
-        if strict_facts:
-            lines.append("No source context was found yet. Ask me to search web/files or provide a URL/document.")
-        else:
-            lines.append(
-                "I can already do: dictionary definitions, web search, website fetch, URL downloads, file listing/reading/search, "
-                "document upload/index, and persistent chat memory."
-            )
-
     lines.append("")
     lines.append(f"Request handled: {user_text[:160]}")
-    return "\n".join(lines)
+    return "\n".join(lines).strip()
 
 
 def _fallback_agent_answer(
@@ -1244,34 +1255,39 @@ def _fallback_agent_answer(
     provenance: list[dict[str, object]],
     llm_error: str,
 ) -> str:
-    lines = [
-        "Agent completed with local rules fallback.",
-        f"Model note: {llm_error}",
-    ]
+    points = _collect_grounded_points(context_blocks, provenance=provenance, limit=6)
+    sources = _extract_sources_from_context(context_blocks, provenance=provenance, limit=8)
+    lines: list[str] = []
+
+    if points:
+        lines.append("Here's what I found from grounded local sources:")
+        lines.append("")
+        lines.append(" ".join(p["text"] for p in points[:3]))
+        if len(points) > 3:
+            lines.append("")
+            lines.append("Additional grounded points:")
+            for item in points[3:6]:
+                lines.append(f"- {item['text']}")
+    else:
+        lines.append("I could not collect enough grounded source text to answer that yet.")
 
     if strict_facts:
-        lines.append("Strict Fact Mode is ON. Unsupported claims are avoided.")
+        lines.append("")
+        lines.append("Strict Fact Mode: only source-backed claims are included.")
 
-    if context_blocks:
+    if sources:
         lines.append("")
-        lines.append("Grounded context summary:")
-        for block in context_blocks[:4]:
-            lines.append(f"- {block[:360]}")
-    else:
-        lines.append("")
-        lines.append("No grounded context was collected.")
+        lines.append("Sources:")
+        for src in sources:
+            lines.append(f"- {src}")
 
-    if provenance:
+    if llm_error:
         lines.append("")
-        lines.append("Provenance sources:")
-        for item in _extract_citations(provenance)[:8]:
-            src = str(item.get("source") or "")
-            if src:
-                lines.append(f"- {src}")
+        lines.append(f"Generation mode: local rules ({llm_error}).")
 
     lines.append("")
     lines.append(f"Request handled: {user_text[:160]}")
-    return "\n".join(lines)
+    return "\n".join(lines).strip()
 
 
 def _extract_dictionary_term(text: str) -> str:
@@ -1371,14 +1387,9 @@ def _render_evidence_answer(user_text: str, evidence: list[dict[str, object]], s
             )
         return "Evidence Mode is ON but no evidence objects were generated."
 
-    lines = [
-        f"Evidence-grounded response for: {user_text[:180]}",
-        "Every claim below includes at least one source and snippet.",
-        "",
-    ]
-
+    valid: list[dict[str, object]] = []
     for idx, item in enumerate(evidence, start=1):
-        claim = str(item.get("claim") or "").strip()
+        claim = _ensure_sentence(str(item.get("claim") or "").strip(), max_chars=220)
         sources = [str(s).strip() for s in (item.get("sources") or []) if str(s).strip()]
         snippets = [str(s).strip() for s in (item.get("snippets") or []) if str(s).strip()]
         confidence = item.get("confidence", 0)
@@ -1387,18 +1398,156 @@ def _render_evidence_answer(user_text: str, evidence: list[dict[str, object]], s
             continue
         if not sources or not snippets:
             continue
+        valid.append(
+            {
+                "index": idx,
+                "claim": claim,
+                "source": sources[0],
+                "snippet": snippets[0][:240],
+                "confidence": confidence,
+            }
+        )
 
-        lines.append(f"{idx}. Claim: {claim}")
-        lines.append(f"   Source: {sources[0]}")
-        lines.append(f"   Snippet: {snippets[0][:240]}")
-        lines.append(f"   Confidence: {confidence}")
-
-    if len(lines) <= 3 and strict_facts:
+    if not valid and strict_facts:
         return (
             "Evidence Mode is ON but collected evidence objects were incomplete "
             "(missing source or snippet). No claim is returned."
         )
+    if not valid:
+        return "Evidence Mode is ON but usable source+snippet pairs were not collected."
+
+    lines = [
+        "Here's a grounded answer based on collected evidence:",
+        "",
+        " ".join(str(item["claim"]) for item in valid[:3]),
+    ]
+
+    if len(valid) > 3:
+        lines.append("")
+        lines.append("Additional grounded points:")
+        for item in valid[3:6]:
+            lines.append(f"- {item['claim']}")
+
+    lines.append("")
+    lines.append("Evidence:")
+    for item in valid:
+        lines.append(f"[{item['index']}] {item['claim']}")
+        lines.append(f"    Source: {item['source']}")
+        lines.append(f"    Snippet: {item['snippet']}")
+        lines.append(f"    Confidence: {item['confidence']}")
+
+    if strict_facts:
+        lines.append("")
+        lines.append("Strict Fact Mode: only source-backed claims are included.")
+
+    lines.append("")
+    lines.append(f"Request handled: {user_text[:160]}")
     return "\n".join(lines).strip()
+
+
+def _ensure_sentence(text: str, max_chars: int = 220) -> str:
+    cleaned = re.sub(r"\s+", " ", text).strip().strip("-")
+    if not cleaned:
+        return ""
+    if len(cleaned) > max_chars:
+        cleaned = cleaned[:max_chars].rstrip()
+    if cleaned and cleaned[-1] not in ".!?":
+        cleaned += "."
+    return cleaned
+
+
+def _point_key(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def _collect_grounded_points(
+    context_blocks: list[str],
+    provenance: list[dict[str, object]],
+    limit: int = 6,
+) -> list[dict[str, str]]:
+    points: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    for item in provenance:
+        source = str(item.get("source") or item.get("path") or item.get("url") or "").strip()
+        snippet = str(item.get("snippet") or "").strip()
+        if not snippet:
+            continue
+        claim = _ensure_sentence(_claim_from_snippet(snippet, max_chars=220), max_chars=220)
+        key = _point_key(claim)
+        if not claim or not key or key in seen:
+            continue
+        seen.add(key)
+        points.append({"text": claim, "source": source})
+        if len(points) >= limit:
+            return points
+
+    for block in context_blocks:
+        source = ""
+        url_match = URL_RE.search(block)
+        if url_match:
+            source = url_match.group(0).strip()
+        for raw in block.splitlines():
+            line = raw.strip().lstrip("-").strip()
+            if not line:
+                continue
+            lower = line.lower()
+            if URL_RE.match(line):
+                continue
+            if lower.startswith(
+                (
+                    "web search results",
+                    "auto web grounding",
+                    "relevant indexed documents",
+                    "session memory",
+                    "directory listing",
+                    "file content",
+                    "dictionary facts",
+                )
+            ):
+                continue
+            if line.startswith("[DIR]"):
+                continue
+            claim = _ensure_sentence(_claim_from_snippet(line, max_chars=220), max_chars=220)
+            key = _point_key(claim)
+            if not claim or not key or key in seen:
+                continue
+            seen.add(key)
+            points.append({"text": claim, "source": source})
+            if len(points) >= limit:
+                return points
+
+    return points
+
+
+def _extract_sources_from_context(
+    context_blocks: list[str],
+    provenance: list[dict[str, object]] | None = None,
+    limit: int = 8,
+) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+
+    if provenance:
+        for item in _extract_citations(provenance):
+            source = str(item.get("source") or item.get("url") or item.get("path") or "").strip()
+            if not source or source in seen:
+                continue
+            seen.add(source)
+            out.append(source)
+            if len(out) >= limit:
+                return out
+
+    for block in context_blocks:
+        for url in URL_RE.findall(block):
+            u = url.strip()
+            if not u or u in seen:
+                continue
+            seen.add(u)
+            out.append(u)
+            if len(out) >= limit:
+                return out
+    return out
 
 
 def _claim_from_snippet(snippet: str, max_chars: int = 180) -> str:
