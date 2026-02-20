@@ -64,7 +64,12 @@ class LocalAgent:
             rows = []
             for hit in doc_hits:
                 src = f" ({hit['source']})" if hit.get("source") else ""
-                rows.append(f"- {hit['doc_name']}{src}: {str(hit['text'])[:260]}")
+                score = float(hit.get("score") or 0.0)
+                depth = int(float(hit.get("radf_depth") or 0.0))
+                weight = float(hit.get("radf_weight") or 1.0)
+                rows.append(
+                    f"- {hit['doc_name']}{src} [score={score:.3f}, depth={depth}, weight={weight:.3f}]: {str(hit['text'])[:260]}"
+                )
             context_blocks.append("Relevant indexed documents:\n" + "\n".join(rows))
 
         facts = self.store.memory_for_session(sid)[:6]
@@ -257,6 +262,7 @@ def _system_prompt(files_root: Path, strict_facts: bool) -> str:
         "You are a local, modular AI assistant focused on practical execution. "
         "Use provided tool context (web results, fetched pages, files, and indexed documents) "
         "to answer with concrete details. If data is missing, say exactly what is missing. "
+        "Document retrieval is ranked with a Recursive-Adic depth weighting, so prioritize higher-scored chunks. "
         "When citing sources, include URLs or file paths explicitly. "
         f"You can access files under this root: {files_root}."
     )

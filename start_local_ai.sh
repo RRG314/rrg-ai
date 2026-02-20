@@ -18,6 +18,10 @@ OLLAMA_HOST="127.0.0.1"
 OLLAMA_PORT="11434"
 AI_MODEL="${AI_MODEL:-llama3.2:3b}"
 export AI_MODEL
+AI_RECURSIVE_ADIC_RANKING="${AI_RECURSIVE_ADIC_RANKING:-1}"
+AI_RADF_BETA="${AI_RADF_BETA:-0.35}"
+AI_RADF_ALPHA="${AI_RADF_ALPHA:-1.5}"
+export AI_RECURSIVE_ADIC_RANKING AI_RADF_BETA AI_RADF_ALPHA
 
 OLLAMA_PID=""
 
@@ -79,6 +83,11 @@ else
   echo "Backend will run in tool/rules mode until Ollama is installed." >&2
 fi
 
+if ! command -v tesseract >/dev/null 2>&1; then
+  echo "Note: tesseract is not installed. Image OCR upload/analyze will be unavailable." >&2
+  echo "Install with: brew install tesseract" >&2
+fi
+
 echo "Starting backend on http://${BACKEND_HOST}:${BACKEND_PORT}"
 uvicorn backend.app:app --host "$BACKEND_HOST" --port "$BACKEND_PORT" --reload > .ai_data/backend.log 2>&1 &
 BACKEND_PID=$!
@@ -108,6 +117,7 @@ fi
 echo "RRG AI is running."
 echo "- UI + API: ${UI_URL}"
 echo "- Model:    ${AI_MODEL}"
+echo "- RADF:     enabled=${AI_RECURSIVE_ADIC_RANKING} alpha=${AI_RADF_ALPHA} beta=${AI_RADF_BETA}"
 echo "Press Ctrl+C to stop."
 
 wait "$BACKEND_PID"

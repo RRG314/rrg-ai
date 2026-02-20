@@ -5,6 +5,8 @@ from pathlib import Path
 
 from pypdf import PdfReader
 
+from .vision import IMAGE_EXTENSIONS, extract_text_from_image_bytes
+
 try:
     import docx  # type: ignore
 except Exception:  # pragma: no cover
@@ -34,6 +36,10 @@ def extract_text_from_bytes(filename: str, data: bytes) -> tuple[str, str]:
 
     if ext in TEXT_EXTENSIONS:
         return _decode_text(data), "text"
+
+    if ext in IMAGE_EXTENSIONS:
+        result = extract_text_from_image_bytes(filename, data)
+        return result.text, "image-ocr"
 
     if ext == ".pdf":
         return _extract_pdf(data), "pdf"

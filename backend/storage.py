@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from .recursive_adic import depth_laplace_weight, recursive_adic_score, recursive_depth
+
 
 STOPWORDS = {
     "the",
@@ -47,10 +49,19 @@ class MemoryFact:
 
 
 class SQLiteStore:
-    def __init__(self, db_path: Path) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        use_recursive_adic: bool = True,
+        radf_beta: float = 0.35,
+        radf_alpha: float = 1.5,
+    ) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self.use_recursive_adic = use_recursive_adic
+        self.radf_beta = float(radf_beta)
+        self.radf_alpha = float(radf_alpha)
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -212,28 +223,63 @@ class SQLiteStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT c.text AS chunk_text, d.name AS doc_name, d.source AS source
+                SELECT
+                    c.text AS chunk_text,
+                    c.chunk_index AS chunk_index,
+                    d.name AS doc_name,
+                    d.source AS source,
+                    d.created_at AS created_at
                 FROM chunks c
                 JOIN documents d ON d.id = c.doc_id
+                ORDER BY d.created_at DESC, c.chunk_index ASC, c.id ASC
                 """
             ).fetchall()
 
         scored: list[dict[str, str | float]] = []
-        for row in rows:
+        for rank_idx, row in enumerate(rows, start=1):
             text = row["chunk_text"].lower()
-            score = sum(text.count(tok) for tok in tokens)
-            if score <= 0:
+            base_score = float(sum(text.count(tok) for tok in tokens))
+            if base_score <= 0:
                 continue
+
+            if self.use_recursive_adic:
+                score = recursive_adic_score(
+                    base_score,
+                    rank_index=rank_idx,
+                    beta=self.radf_beta,
+                    alpha=self.radf_alpha,
+                )
+                radf_weight = depth_laplace_weight(
+                    rank_idx,
+                    beta=self.radf_beta,
+                    alpha=self.radf_alpha,
+                )
+                radf_depth = float(recursive_depth(rank_idx, alpha=self.radf_alpha))
+            else:
+                score = base_score
+                radf_weight = 1.0
+                radf_depth = 0.0
+
             scored.append(
                 {
                     "doc_name": row["doc_name"],
                     "source": row["source"] or "",
                     "text": row["chunk_text"],
+                    "base_score": base_score,
                     "score": float(score),
+                    "radf_weight": float(radf_weight),
+                    "radf_depth": radf_depth,
                 }
             )
 
-        scored.sort(key=lambda x: x["score"], reverse=True)
+        scored.sort(
+            key=lambda x: (
+                float(x["score"]),
+                float(x["base_score"]),
+                -float(x["radf_depth"]),
+            ),
+            reverse=True,
+        )
         return scored[:limit]
 
 

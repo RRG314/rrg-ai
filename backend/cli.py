@@ -17,10 +17,31 @@ def main() -> None:
     parser.add_argument("--files-root", default=os.getenv("AI_FILES_ROOT", str(Path.home())))
     parser.add_argument("--model", default=os.getenv("AI_MODEL", "llama3.2:3b"))
     parser.add_argument("--ollama-url", default=os.getenv("AI_OLLAMA_URL", "http://127.0.0.1:11434"))
+    parser.add_argument(
+        "--recursive-adic-ranking",
+        default=os.getenv("AI_RECURSIVE_ADIC_RANKING", "1"),
+        help="Enable Recursive-Adic chunk ranking (1/0).",
+    )
+    parser.add_argument(
+        "--radf-beta",
+        default=os.getenv("AI_RADF_BETA", "0.35"),
+        help="Depth-Laplace beta for Recursive-Adic ranking.",
+    )
+    parser.add_argument(
+        "--radf-alpha",
+        default=os.getenv("AI_RADF_ALPHA", "1.5"),
+        help="Recursive depth alpha for RDT recurrence.",
+    )
     args = parser.parse_args()
 
     root = Path.cwd()
-    store = SQLiteStore(root / args.db)
+    use_recursive_adic = str(args.recursive_adic_ranking).lower() not in {"0", "false", "no"}
+    store = SQLiteStore(
+        root / args.db,
+        use_recursive_adic=use_recursive_adic,
+        radf_beta=float(args.radf_beta),
+        radf_alpha=float(args.radf_alpha),
+    )
     files = FileBrowser(Path(args.files_root))
     llm = OllamaClient(model=args.model, base_url=args.ollama_url)
     agent = LocalAgent(store=store, files=files, llm=llm, downloads_dir=root / args.downloads)

@@ -18,6 +18,9 @@
     connectBackend: document.getElementById("connect-backend"),
     uploadFile: document.getElementById("upload-file"),
     uploadButton: document.getElementById("upload-button"),
+    imageFile: document.getElementById("image-file"),
+    imagePrompt: document.getElementById("image-prompt"),
+    imageButton: document.getElementById("image-button"),
     ingestUrl: document.getElementById("ingest-url"),
     ingestButton: document.getElementById("ingest-button"),
     strictFacts: document.getElementById("strict-facts"),
@@ -30,6 +33,11 @@
     modelAvailable: false,
     model: "",
     modelReason: "",
+    recursiveAdicRanking: false,
+    radfAlpha: 1.5,
+    radfBeta: 0.35,
+    imageOCRAvailable: false,
+    imageOCRReason: "",
   };
 
   const state = loadState();
@@ -55,6 +63,7 @@
   ui.applyQuickAction.addEventListener("click", onQuickAction);
   ui.connectBackend.addEventListener("click", onConnectBackend);
   ui.uploadButton.addEventListener("click", onUpload);
+  ui.imageButton.addEventListener("click", onAnalyzeImage);
   ui.ingestButton.addEventListener("click", onIngest);
   ui.strictFacts.addEventListener("change", onStrictFactsChanged);
 
@@ -132,6 +141,7 @@
       download_url: "download https://arxiv.org/pdf/1706.03762.pdf",
       read_file: "read file /Users/stevenreid/Documents/your-file.txt",
       find_files: "search files for optimizer in /Users/stevenreid/Documents",
+      analyze_image: "analyze the text in this uploaded image",
     };
 
     ui.chatInput.value = templates[action] || "";
@@ -230,6 +240,73 @@
     }
   }
 
+  async function onAnalyzeImage() {
+    if (!runtime.backendOnline) {
+      appendMessage(
+        state.currentSessionId,
+        "ai",
+        "Not connected yet. Click Auto Connect first. If needed, run ./start_local_ai.sh."
+      );
+      return;
+    }
+
+    if (!runtime.imageOCRAvailable) {
+      appendMessage(
+        state.currentSessionId,
+        "ai",
+        `Image OCR is unavailable: ${runtime.imageOCRReason || "unknown reason"}`
+      );
+      return;
+    }
+
+    const file = ui.imageFile.files && ui.imageFile.files[0];
+    if (!file) {
+      appendMessage(state.currentSessionId, "ai", "Choose an image first.");
+      return;
+    }
+
+    ui.imageButton.disabled = true;
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("prompt", (ui.imagePrompt.value || "").trim());
+      form.append("session_id", state.currentSessionId);
+
+      const response = await fetch(apiUrl("/api/image/analyze"), {
+        method: "POST",
+        body: form,
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || `image analyze failed (${response.status})`);
+      }
+
+      const lines = [
+        `Image analyzed: ${payload.filename}`,
+        `format: ${payload.image_format} | size: ${payload.width}x${payload.height}`,
+        `ocr chars: ${payload.ocr_char_count}`,
+      ];
+      if (payload.doc_id) {
+        lines.push(`doc_id: ${payload.doc_id}`);
+      }
+      if (payload.answer) {
+        lines.push("", `Model analysis:\n${payload.answer}`);
+      }
+      if (payload.ocr_text) {
+        lines.push("", `OCR preview:\n${String(payload.ocr_text).slice(0, 1200)}`);
+      }
+
+      appendMessage(state.currentSessionId, "ai", lines.join("\n"));
+      ui.imageFile.value = "";
+      ui.imagePrompt.value = "";
+    } catch (err) {
+      appendMessage(state.currentSessionId, "ai", `Image analysis failed: ${String(err)}`);
+    } finally {
+      ui.imageButton.disabled = false;
+      renderAll();
+    }
+  }
+
   async function checkBackend(showMessage) {
     const candidates = discoverBackendCandidates();
     let connected = false;
@@ -244,6 +321,11 @@
         runtime.modelAvailable = Boolean(payload.model_available);
         runtime.model = payload.model || "";
         runtime.modelReason = payload.model_reason || "";
+        runtime.recursiveAdicRanking = Boolean(payload.recursive_adic_ranking);
+        runtime.radfAlpha = Number(payload.radf_alpha || 1.5);
+        runtime.radfBeta = Number(payload.radf_beta || 0.35);
+        runtime.imageOCRAvailable = Boolean(payload.image_ocr_available);
+        runtime.imageOCRReason = payload.image_ocr_reason || "";
 
         state.backendUrl = base;
         ui.backendUrl.value = base;
@@ -252,7 +334,7 @@
         if (showMessage) {
           addBubble(
             "ai",
-            `Backend connected: ${runtime.backendMode}\nurl: ${base}\nmodel: ${runtime.model || "none"}\nmodel_available: ${runtime.modelAvailable}`
+            `Backend connected: ${runtime.backendMode}\nurl: ${base}\nmodel: ${runtime.model || "none"}\nmodel_available: ${runtime.modelAvailable}\nrecursive_adic_ranking: ${runtime.recursiveAdicRanking}\nradf_alpha: ${runtime.radfAlpha}\nradf_beta: ${runtime.radfBeta}\nimage_ocr_available: ${runtime.imageOCRAvailable}`
           );
         }
 
@@ -270,6 +352,11 @@
       runtime.modelAvailable = false;
       runtime.model = "";
       runtime.modelReason = "No backend candidate responded";
+      runtime.recursiveAdicRanking = false;
+      runtime.radfAlpha = 1.5;
+      runtime.radfBeta = 0.35;
+      runtime.imageOCRAvailable = false;
+      runtime.imageOCRReason = "Backend offline";
 
       if (showMessage) {
         addBubble(
@@ -625,11 +712,15 @@
 
     const backend = runtime.backendOnline ? "connected" : "offline";
     const model = runtime.modelAvailable ? runtime.model : "none";
+    const imageOCR = runtime.imageOCRAvailable ? "on" : "off";
+    const radf = runtime.recursiveAdicRanking
+      ? `on(alpha=${runtime.radfAlpha.toFixed(2)},beta=${runtime.radfBeta.toFixed(2)})`
+      : "off";
     const strictFacts = state.strictFacts !== false ? "on" : "off";
     const backendBase = runtime.backendBase || state.backendUrl || "none";
 
     ui.status.textContent =
-      `backend: ${backend} | strict facts: ${strictFacts} | model: ${model} | url: ${backendBase} | ` +
+      `backend: ${backend} | strict facts: ${strictFacts} | model: ${model} | image-ocr: ${imageOCR} | radf: ${radf} | url: ${backendBase} | ` +
       `docs(static): ${docs} | sessions: ${sessions} | facts: ${facts}`;
   }
 

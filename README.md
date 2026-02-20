@@ -7,8 +7,10 @@ Local-first modular AI system with an HTML chat UI plus a Python backend for:
 - URL downloading to local disk
 - Dictionary definitions from a live source (`dictionaryapi.dev`)
 - Document upload/indexing (TXT/MD/PDF/DOCX)
+- Image OCR + image analysis prompt flow (PNG/JPG/WebP/TIFF/etc.)
 - Local file browsing, reading, and text search
 - Optional local LLM via Ollama (no cloud dependency required)
+- Recursive-Adic retrieval ranking (depth-Laplace weighted chunk scoring)
 
 ## Modes
 
@@ -37,6 +39,7 @@ After it starts:
 1. Open the URL it prints.
 2. Click `Auto Connect`.
 3. Chat normally.
+4. For image OCR, install Tesseract once: `brew install tesseract`
 
 Or run manually:
 
@@ -54,6 +57,7 @@ If you still want a separate static frontend server, you can use one, and the UI
 You only need `Connect Backend` if you want to override URL manually.
 
 Strict Fact Mode is enabled by default in the UI.
+Recursive-Adic retrieval ranking is enabled by default (`AI_RECURSIVE_ADIC_RANKING=1`).
 
 Simple example prompts:
 - `define entropy`
@@ -93,6 +97,7 @@ If no model is available, the system still works in rules mode with tools.
 - `POST /api/chat`
 - `POST /api/upload`
 - `POST /api/ingest-url`
+- `POST /api/image/analyze` (multipart: `file`, optional `prompt`, optional `session_id`)
 - `POST /api/search`
 - `POST /api/define`
 - `POST /api/fetch`
@@ -116,8 +121,25 @@ Configurable via env vars:
 - `AI_FILES_ROOT`
 - `AI_MODEL`
 - `AI_OLLAMA_URL`
+- `AI_RECURSIVE_ADIC_RANKING` (`1`/`0`)
+- `AI_RADF_ALPHA` (default `1.5`)
+- `AI_RADF_BETA` (default `0.35`)
 
 ## GitHub Pages
 
 GitHub Pages can host the HTML UI, but full local tooling needs a Python backend.
 Static pages alone cannot securely provide unrestricted file-system and document-processing capabilities.
+
+## Recursive-Adic Integration
+
+The backend now uses a Recursive-Adic depth proxy in retrieval scoring:
+
+- Recursive depth (RDT recurrence): `R(1)=0`, `R(n)=1+min_{1<=k<n}((R(k)+R(n-k))/alpha)`.
+- Depth-Laplace weighting: `w(n)=exp(-beta*R(n))`, clamped to a minimum for stability.
+- Final chunk score: `base_lexical_score * w(rank_index)`.
+
+This means retrieved context is not only keyword-matched but also depth-weighted, giving you a concrete, active integration of the Recursive-Adic framework into chat grounding.
+
+Further design/novelty notes:
+- `docs/recursive_adic_novelty_review.md`
+- `docs/recursive_adic_ai_systems.md`

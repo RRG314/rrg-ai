@@ -26,3 +26,5 @@ def test_session_memory_and_docs(tmp_path: Path) -> None:
     hits = store.search_chunks("optimizer convergence", limit=3)
     assert hits
     assert "optimizer" in hits[0]["text"].lower()
+    assert "radf_weight" in hits[0]
+    assert "radf_depth" in hits[0]

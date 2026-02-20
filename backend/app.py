@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -13,6 +13,7 @@ from .llm import OllamaClient
 from .storage import SQLiteStore
 from .tools.docs import extract_text_from_bytes
 from .tools.filesystem import FileBrowser
+from .tools.vision import analyze_image_bytes, supports_image_ocr
 from .tools.web import dictionary_define, download_url, fetch_url_text, search_web
 
 
@@ -23,11 +24,19 @@ DB_PATH = DATA_DIR / "ai.sqlite3"
 FILES_ROOT = Path(os.getenv("AI_FILES_ROOT", str(Path.home()))).expanduser().resolve()
 OLLAMA_MODEL = os.getenv("AI_MODEL", "llama3.2:3b")
 OLLAMA_URL = os.getenv("AI_OLLAMA_URL", "http://127.0.0.1:11434")
+RECURSIVE_ADIC_RANKING = os.getenv("AI_RECURSIVE_ADIC_RANKING", "1").lower() not in {"0", "false", "no"}
+RADF_BETA = float(os.getenv("AI_RADF_BETA", "0.35"))
+RADF_ALPHA = float(os.getenv("AI_RADF_ALPHA", "1.5"))
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
-store = SQLiteStore(DB_PATH)
+store = SQLiteStore(
+    DB_PATH,
+    use_recursive_adic=RECURSIVE_ADIC_RANKING,
+    radf_beta=RADF_BETA,
+    radf_alpha=RADF_ALPHA,
+)
 files = FileBrowser(FILES_ROOT)
 llm = OllamaClient(model=OLLAMA_MODEL, base_url=OLLAMA_URL)
 agent = LocalAgent(store=store, files=files, llm=llm, downloads_dir=DOWNLOADS_DIR)
@@ -74,6 +83,7 @@ class FileSearchRequest(BaseModel):
 @app.get("/api/health")
 def health() -> dict[str, object]:
     status = llm.status()
+    ocr_ok, ocr_reason = supports_image_ocr()
     return {
         "ok": True,
         "backend": "local-python",
@@ -81,6 +91,11 @@ def health() -> dict[str, object]:
         "model": status.model,
         "model_available": status.available,
         "model_reason": status.reason,
+        "recursive_adic_ranking": RECURSIVE_ADIC_RANKING,
+        "radf_beta": RADF_BETA,
+        "radf_alpha": RADF_ALPHA,
+        "image_ocr_available": ocr_ok,
+        "image_ocr_reason": ocr_reason,
     }
 
 
@@ -116,6 +131,39 @@ async def upload(file: UploadFile = File(...)) -> dict[str, object]:
             "name": file.filename,
             "kind": kind,
             "char_count": len(text),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/image/analyze")
+async def image_analyze(
+    file: UploadFile = File(...),
+    prompt: str = Form(default=""),
+    session_id: str | None = Form(default=None),
+) -> dict[str, object]:
+    try:
+        data = await file.read()
+        result = analyze_image_bytes(file.filename or "image-upload", data, prompt=prompt, llm=llm)
+
+        doc_id: str | None = None
+        ocr_text = str(result.get("ocr_text", "")).strip()
+        if ocr_text:
+            doc_id = store.add_document(
+                name=file.filename or "image-upload",
+                source="image-upload",
+                kind="image-ocr",
+                text=ocr_text,
+            )
+            if session_id:
+                store.upsert_memory(session_id, "last_image_doc", file.filename or "image-upload")
+
+        return {
+            "ok": True,
+            "doc_id": doc_id,
+            "session_id": session_id,
+            **result,
+            "ocr_char_count": len(ocr_text),
         }
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
