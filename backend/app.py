@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .agent import LocalAgent
@@ -202,3 +203,7 @@ def search_files(req: FileSearchRequest) -> dict[str, object]:
         return {"query": req.query, "path": req.path, "hits": hits}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# Serve frontend on the same backend port so no separate web server is required.
+app.mount("/", StaticFiles(directory=ROOT, html=True), name="frontend")

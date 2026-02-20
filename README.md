@@ -40,10 +40,12 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
-python3 -m http.server 5173
 ```
 
-Open [http://127.0.0.1:5173](http://127.0.0.1:5173). The UI auto-detects the backend (`same origin`, `127.0.0.1:8000`, `localhost:8000`) and connects automatically.
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000). The UI is served by the backend itself and connects automatically.
+If port `8000` is busy, `start_local_ai.sh` automatically chooses the next free port.
+
+If you still want a separate static frontend server, you can use one, and the UI will auto-detect the backend (`same origin`, `127.0.0.1:8000`, `localhost:8000`).
 You only need `Connect Backend` if you want to override URL manually.
 
 Strict Fact Mode is enabled by default in the UI.
