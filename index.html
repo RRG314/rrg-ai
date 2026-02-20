@@ -11,7 +11,7 @@
       <header class="topbar">
         <div>
           <h1>RRG AI</h1>
-          <p>Local-first AI chat with memory, document ingestion, web tools, and file access.</p>
+          <p>Simple local AI chat. Click Auto Connect, then just chat.</p>
         </div>
         <div class="actions">
           <button id="new-session" class="ghost">New Chat</button>
@@ -29,24 +29,45 @@
 
         <section class="chat-panel">
           <section class="toolbar">
+            <div class="row">
+              <button id="auto-connect" class="ghost">Auto Connect</button>
+              <div id="connection-hint" class="hint">Trying to connect...</div>
+            </div>
+            <div class="row">
+              <select id="quick-action">
+                <option value="">Quick Action...</option>
+                <option value="define">Define a word</option>
+                <option value="search_web">Search the web</option>
+                <option value="read_site">Read a website URL</option>
+                <option value="download_url">Download from URL</option>
+                <option value="read_file">Read a local file</option>
+                <option value="find_files">Find text in local files</option>
+              </select>
+              <button id="apply-quick-action" class="ghost">Use</button>
+            </div>
             <div class="row row-tight">
               <label class="check">
                 <input id="strict-facts" type="checkbox" checked />
                 Strict Fact Mode (cite sources, avoid unsupported claims)
               </label>
             </div>
-            <div class="row">
-              <input id="backend-url" type="text" placeholder="Backend URL (auto-detected if blank)" />
-              <button id="connect-backend" class="ghost">Connect Backend</button>
-            </div>
-            <div class="row">
-              <input id="upload-file" type="file" />
-              <button id="upload-button" class="ghost">Upload Doc</button>
-            </div>
-            <div class="row">
-              <input id="ingest-url" type="text" placeholder="Ingest URL into document index" />
-              <button id="ingest-button" class="ghost">Ingest URL</button>
-            </div>
+            <details class="advanced">
+              <summary>Advanced Options</summary>
+              <div class="advanced-body">
+                <div class="row">
+                  <input id="backend-url" type="text" placeholder="Backend URL (optional override)" />
+                  <button id="connect-backend" class="ghost">Connect Backend</button>
+                </div>
+                <div class="row">
+                  <input id="upload-file" type="file" />
+                  <button id="upload-button" class="ghost">Upload File</button>
+                </div>
+                <div class="row">
+                  <input id="ingest-url" type="text" placeholder="Website URL to read and remember" />
+                  <button id="ingest-button" class="ghost">Read URL</button>
+                </div>
+              </div>
+            </details>
           </section>
           <div id="chat-log" class="chat-log"></div>
           <form id="chat-form" class="composer">

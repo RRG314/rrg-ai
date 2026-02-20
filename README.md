@@ -33,6 +33,11 @@ cd /Users/stevenreid/Documents/New\ project/repo_audit/rrg314/ai
 
 macOS double-click launcher: `start_local_ai.command`
 
+After it starts:
+1. Open the URL it prints.
+2. Click `Auto Connect`.
+3. Chat normally.
+
 Or run manually:
 
 ```bash
@@ -50,11 +55,12 @@ You only need `Connect Backend` if you want to override URL manually.
 
 Strict Fact Mode is enabled by default in the UI.
 
-Example prompts:
+Simple example prompts:
 - `define entropy`
 - `what does theorem mean`
 - `search the web for latest retrieval benchmarks`
 - `read file /Users/stevenreid/Documents/paper.txt`
+- `read website https://example.com`
 
 ## Terminal Chat
 

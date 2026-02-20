@@ -10,6 +10,10 @@
     sessionList: document.getElementById("session-list"),
     newSession: document.getElementById("new-session"),
     clearMemory: document.getElementById("clear-memory"),
+    autoConnect: document.getElementById("auto-connect"),
+    connectionHint: document.getElementById("connection-hint"),
+    quickAction: document.getElementById("quick-action"),
+    applyQuickAction: document.getElementById("apply-quick-action"),
     backendUrl: document.getElementById("backend-url"),
     connectBackend: document.getElementById("connect-backend"),
     uploadFile: document.getElementById("upload-file"),
@@ -38,6 +42,7 @@
   ui.strictFacts.checked = state.strictFacts !== false;
 
   renderAll();
+  updateConnectionHint();
   checkBackend(false);
   window.setInterval(() => {
     checkBackend(false);
@@ -46,6 +51,8 @@
   ui.chatForm.addEventListener("submit", onSubmit);
   ui.newSession.addEventListener("click", onNewSession);
   ui.clearMemory.addEventListener("click", onClearMemory);
+  ui.autoConnect.addEventListener("click", onAutoConnect);
+  ui.applyQuickAction.addEventListener("click", onQuickAction);
   ui.connectBackend.addEventListener("click", onConnectBackend);
   ui.uploadButton.addEventListener("click", onUpload);
   ui.ingestButton.addEventListener("click", onIngest);
@@ -61,6 +68,10 @@
 
     ui.send.disabled = true;
     try {
+      if (!runtime.backendOnline) {
+        await checkBackend(false);
+      }
+
       let answer;
       if (runtime.backendOnline) {
         answer = await backendRespond(text, state.currentSessionId);
@@ -103,6 +114,30 @@
     await checkBackend(true);
   }
 
+  async function onAutoConnect() {
+    state.backendUrl = "";
+    ui.backendUrl.value = "";
+    saveState();
+    await checkBackend(true);
+  }
+
+  function onQuickAction() {
+    const action = (ui.quickAction.value || "").trim();
+    if (!action) return;
+
+    const templates = {
+      define: "define entropy",
+      search_web: "search the web for latest local llm benchmarks",
+      read_site: "read website https://en.wikipedia.org/wiki/Entropy_(information_theory)",
+      download_url: "download https://arxiv.org/pdf/1706.03762.pdf",
+      read_file: "read file /Users/stevenreid/Documents/your-file.txt",
+      find_files: "search files for optimizer in /Users/stevenreid/Documents",
+    };
+
+    ui.chatInput.value = templates[action] || "";
+    ui.chatInput.focus();
+  }
+
   function onStrictFactsChanged() {
     state.strictFacts = Boolean(ui.strictFacts.checked);
     saveState();
@@ -110,7 +145,11 @@
 
   async function onUpload() {
     if (!runtime.backendOnline) {
-      appendMessage(state.currentSessionId, "ai", "Backend offline. Start local backend first, then upload.");
+      appendMessage(
+        state.currentSessionId,
+        "ai",
+        "Not connected yet. Click Auto Connect first. If needed, run ./start_local_ai.sh."
+      );
       return;
     }
 
@@ -151,7 +190,11 @@
 
   async function onIngest() {
     if (!runtime.backendOnline) {
-      appendMessage(state.currentSessionId, "ai", "Backend offline. Start local backend first, then ingest URLs.");
+      appendMessage(
+        state.currentSessionId,
+        "ai",
+        "Not connected yet. Click Auto Connect first. If needed, run ./start_local_ai.sh."
+      );
       return;
     }
 
@@ -229,10 +272,14 @@
       runtime.modelReason = "No backend candidate responded";
 
       if (showMessage) {
-        addBubble("ai", "Backend not reachable. Running static browser mode only.");
+        addBubble(
+          "ai",
+          "Still not connected.\nRun this once in Terminal:\ncd /Users/stevenreid/Documents/New\\ project/repo_audit/rrg314/ai\n./start_local_ai.sh"
+        );
       }
     }
 
+    updateConnectionHint();
     renderStatus();
   }
 
@@ -302,8 +349,10 @@
       add(window.location.origin);
     }
 
-    add("http://127.0.0.1:8000");
-    add("http://localhost:8000");
+    for (let port = 8000; port <= 8020; port += 1) {
+      add(`http://127.0.0.1:${port}`);
+      add(`http://localhost:${port}`);
+    }
     return values;
   }
 
@@ -323,6 +372,14 @@
     }
   }
 
+  function updateConnectionHint() {
+    if (runtime.backendOnline) {
+      ui.connectionHint.textContent = `Connected to ${runtime.backendBase}`;
+      return;
+    }
+    ui.connectionHint.textContent = "Not connected. Click Auto Connect.";
+  }
+
   function staticRespond(text, sessionId) {
     extractFacts(text, sessionId);
 
@@ -337,7 +394,8 @@
     const facts = relevantFacts(text, sessionId, 2);
 
     const lines = [
-      "Running static mode. For full web/file/document tools, connect local backend.",
+      "Running browser-only mode right now.",
+      "For full tools, click Auto Connect (or run ./start_local_ai.sh).",
       "",
       "Response:",
       "I can still provide planning and memory-based help from browser state.",
@@ -565,13 +623,13 @@
     const sessions = Object.keys(state.sessions).length;
     const facts = Object.values(state.facts).reduce((n, arr) => n + arr.length, 0);
 
-    const backend = runtime.backendOnline ? "online" : "offline";
+    const backend = runtime.backendOnline ? "connected" : "offline";
     const model = runtime.modelAvailable ? runtime.model : "none";
     const strictFacts = state.strictFacts !== false ? "on" : "off";
     const backendBase = runtime.backendBase || state.backendUrl || "none";
 
     ui.status.textContent =
-      `mode: ${runtime.backendMode} (${backend}) | strict_facts: ${strictFacts} | model: ${model} | backend: ${backendBase} | ` +
+      `backend: ${backend} | strict facts: ${strictFacts} | model: ${model} | url: ${backendBase} | ` +
       `docs(static): ${docs} | sessions: ${sessions} | facts: ${facts}`;
   }
 

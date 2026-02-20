@@ -171,6 +171,36 @@ button.warn {
   color: var(--ink);
 }
 
+.hint {
+  display: flex;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid #d8e1ec;
+  border-radius: 10px;
+  background: #f8fbfe;
+  color: #2f4762;
+  font-size: 0.9rem;
+}
+
+details.advanced {
+  border: 1px solid #d8e1ec;
+  border-radius: 10px;
+  background: #fbfdff;
+  padding: 8px;
+}
+
+details.advanced summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #2f4762;
+}
+
+.advanced-body {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .chat-log {
   overflow: auto;
   min-height: 240px;
@@ -219,7 +249,8 @@ textarea {
 }
 
 input[type="text"],
-input[type="file"] {
+input[type="file"],
+select {
   width: 100%;
   border: 1px solid #ccd8e5;
   border-radius: 10px;
