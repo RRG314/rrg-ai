@@ -45,6 +45,7 @@ This checklist is for a professional release of the local-first AI platform, wit
 - [x] Commands use generic repo-local paths
 - [x] Sensitive runtime data remains in `.ai_data/` and gitignored
 - [x] No required cloud dependency for core operation
+- [x] MIT license file present and referenced in README
 
 ## Suggested Final Gate Before Publishing
 

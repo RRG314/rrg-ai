@@ -1,5 +1,10 @@
 # RRG AI
 
+[![CI](https://github.com/RRG314/ai/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/RRG314/ai/actions/workflows/ci.yml)
+[![Pages](https://github.com/RRG314/ai/actions/workflows/pages.yml/badge.svg?branch=main)](https://github.com/RRG314/ai/actions/workflows/pages.yml)
+[![Release](https://img.shields.io/github/v/release/RRG314/ai?display_name=tag)](https://github.com/RRG314/ai/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Local-first modular AI platform with an HTML chat UI and a Python backend.
 
 The project is designed for private local use first: chat, retrieval, tools, evidence/provenance, adaptive planning, and benchmark/eval harnesses all run without cloud APIs.
@@ -15,6 +20,42 @@ The project is designed for private local use first: chat, retrieval, tools, evi
 - Recursive-Adic retrieval scoring integrated in storage ranking
 - Local evaluation suites (`eval`, `industry_bench`, `system_check`)
 - Benchmark run isolation by default (fresh DB/data per run)
+
+## Novel Components and Claim Boundaries
+
+This project includes original system combinations and research-driven integrations, with explicit boundaries on what is standard versus new:
+
+- Novel in this implementation:
+  - Recursive-Adic depth-weighted retrieval (`backend/recursive_adic.py`, `backend/storage.py`)
+  - Evidence-enforced grounded answer rendering in agent mode
+  - Adaptive post-task reflection with persisted planning heuristics and improvement rules
+  - Default-isolated benchmark/eval execution for reproducible local scoring
+- Standard building blocks used where appropriate:
+  - FastAPI service layer, SQLite persistence, and local tool routing patterns
+  - Optional local LLM inference via Ollama (not required for core tooling mode)
+- Scope boundary:
+  - This release does not claim solved AGI; it provides a modular local agent platform for grounded chat, tool use, and measurable iteration.
+
+## Related Repositories and Research Links
+
+Related repositories under the same account:
+
+- [Recursive-Adic-Number-Field](https://github.com/RRG314/Recursive-Adic-Number-Field)
+- [Recursive-Division-Tree-Algorithm--Preprint](https://github.com/RRG314/Recursive-Division-Tree-Algorithm--Preprint)
+- [recursive-depth-integration-](https://github.com/RRG314/recursive-depth-integration-)
+- [rdt-collatz-orthogonality](https://github.com/RRG314/rdt-collatz-orthogonality)
+- [RDT-entropy](https://github.com/RRG314/RDT-entropy)
+- [Entorpy-RAG](https://github.com/RRG314/Entorpy-RAG)
+- [topological-adam](https://github.com/RRG314/topological-adam)
+- [topological-neural-net](https://github.com/RRG314/topological-neural-net)
+
+Matching Zenodo references used by/related to this stack:
+
+- [The Recursive Adic Number Field: Construction Analysis and Recursive Depth Transforms](https://zenodo.org/records/17555644) (DOI: `10.5281/zenodo.17555644`)
+- [Recursive Division Tree: A Log-Log Algorithm for Integer Depth](https://zenodo.org/records/18012166) (DOI: `10.5281/zenodo.18012166`)
+- [Recursive-Depth Integration: A Depth-Weighted Measure and Integral on the Integers](https://zenodo.org/records/17753502) (DOI: `10.5281/zenodo.17753502`)
+- [RDT-Based Zeta and Laplace Transforms: Analytic Framework for Depth-Weighted Number Theory](https://zenodo.org/records/17766570) (DOI: `10.5281/zenodo.17766570`)
+- [Structural Entropy Analysis of Integer Depth via Recursive Division Tree](https://zenodo.org/records/17682287) (DOI: `10.5281/zenodo.17682287`)
 
 ## Architecture (At A Glance)
 

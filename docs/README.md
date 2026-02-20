@@ -20,5 +20,6 @@ This folder is organized for release-quality onboarding and operations.
 
 - `FULL_INVENTORY_REVIEW_2026-02-20.md` - current full inventory and linkage review snapshot
 - `FULL_INVENTORY_BENCHMARK_REPORT_2026-02-20.md` - benchmark/eval snapshot and interpretation
+- `RELEASE_NOTES_v0.1.0.md` - professional release summary and references
 
 Use `README.md` at repo root for quick start; use these docs for release prep, audits, and technical deep dives.
