@@ -107,3 +107,37 @@ def test_evidence_mode_prefers_local_core_even_with_available_llm(tmp_path: Path
     assert llm.chat_calls == 0
     meta = res.get("original_work_used") or {}
     assert meta.get("prefer_local_core") is True
+
+
+def test_agent_adaptive_update_persists_rule_and_heuristics(tmp_path: Path) -> None:
+    db = tmp_path / "ai.sqlite3"
+    root = tmp_path / "files"
+    root.mkdir(parents=True, exist_ok=True)
+
+    store = SQLiteStore(db)
+    files = FileBrowser(root)
+    agent = LocalAgent(store=store, files=files, llm=_FakeLLM(), downloads_dir=tmp_path / "downloads")
+
+    cfg = AgentRunConfig(
+        strict_facts=True,
+        evidence_mode=True,
+        prefer_local_core=True,
+        allow_web=False,
+        allow_files=False,
+        allow_docs=True,
+        max_steps=8,
+    )
+
+    res = agent.run_agent(None, "tell me about sharks", config=cfg)
+    adaptive = res.get("adaptive_update")
+    assert isinstance(adaptive, dict)
+    assert "task_success" in adaptive
+    assert "heuristic_updates" in adaptive
+    assert adaptive.get("improvement_rule_id")
+
+    sid = str(res.get("session_id") or "")
+    assert sid
+    rules = store.list_improvement_rules(sid, limit=5)
+    assert rules
+    heuristics = store.get_planning_heuristics()
+    assert "planner_confidence" in heuristics

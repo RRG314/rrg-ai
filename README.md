@@ -15,6 +15,7 @@ Local-first modular AI system with an HTML chat UI plus a Python backend for:
 - Evidence mode outputs (`claim -> sources -> snippets -> confidence`)
 - Callable local skills: `research_pipeline`, `doc_pipeline`, `folder_audit_pipeline`
 - Structured memory tables: `facts`, `preferences`, `outcomes`, `artifacts`
+- Adaptive planner loop: post-task success/failure analysis, heuristic updates, and stored improvement rules
 
 ## Modes
 
@@ -141,6 +142,8 @@ Structured memory tables:
 - `preferences` (`key`, `value`, `source`, timestamps)
 - `outcomes` (`title`, `summary`, `status`, `score`)
 - `artifacts` (`artifact_type`, `location`, `source`, `doc_id`, `description`)
+- `planning_heuristics` (`key`, `value`, `source`, `updated_at`)
+- `improvement_rules` (`session_id`, `task_id`, `rule`, `trigger`, `confidence`)
 
 Configurable via env vars:
 
@@ -196,6 +199,7 @@ Further design/novelty notes:
 - `provenance` (urls/files/doc ids + snippets)
 - `evidence` objects in Evidence Mode
 - `memory` (facts/preferences/outcomes/artifacts snapshot)
+- `adaptive_update` (task success analysis + learned heuristic deltas + improvement rule id)
 
 Core flags:
 - `strict_fact_mode` / `strict_facts`

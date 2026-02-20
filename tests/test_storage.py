@@ -88,3 +88,42 @@ def test_structured_memory_tables(tmp_path: Path) -> None:
     assert snapshot["preferences"]
     assert snapshot["outcomes"]
     assert snapshot["artifacts"]
+
+
+def test_adaptive_heuristics_and_rules_tables(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "ai.sqlite3")
+    sid = store.ensure_session(None, "adaptive session")
+
+    defaults = {
+        "retry_attempts": 2.0,
+        "docs_priority": 0.62,
+        "web_priority": 0.56,
+        "planner_confidence": 0.5,
+    }
+    initial = store.get_planning_heuristics(defaults=defaults)
+    assert initial["retry_attempts"] == 2.0
+    assert initial["docs_priority"] == 0.62
+
+    store.upsert_planning_heuristic("retry_attempts", 2.75, source="adaptive-agent")
+    store.upsert_planning_heuristic("planner_confidence", 0.35, source="adaptive-agent")
+    loaded = store.get_planning_heuristics(defaults=defaults)
+    assert loaded["retry_attempts"] == 2.75
+    assert loaded["planner_confidence"] == 0.35
+
+    rid = store.add_improvement_rule(
+        session_id=sid,
+        task_id="task-123",
+        rule="Failure pattern: prioritize docs before web and increase retries.",
+        trigger="no_grounded_provenance",
+        confidence=0.81,
+    )
+    assert rid > 0
+
+    rules = store.list_improvement_rules(sid, limit=10)
+    assert rules
+    assert rules[0].task_id == "task-123"
+    assert "prioritize docs" in rules[0].rule.lower()
+
+    snapshot = store.memory_snapshot(sid, limit=20)
+    assert snapshot["planning_heuristics"]
+    assert snapshot["improvement_rules"]

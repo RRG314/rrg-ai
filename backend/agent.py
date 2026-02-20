@@ -12,6 +12,12 @@ from .tools.web import dictionary_define, download_url, fetch_url_text, search_w
 
 
 URL_RE = re.compile(r"https?://[^\s)\]}>\"']+", flags=re.IGNORECASE)
+DEFAULT_PLANNING_HEURISTICS: dict[str, float] = {
+    "retry_attempts": 2.0,
+    "docs_priority": 0.62,
+    "web_priority": 0.56,
+    "planner_confidence": 0.5,
+}
 
 
 @dataclass
@@ -148,8 +154,9 @@ class LocalAgent:
         sid = self.store.ensure_session(session_id, title=user_text[:60] or "Agent task")
         self.store.add_message(sid, "user", user_text)
         self._extract_memory(sid, user_text)
+        heuristics = self.store.get_planning_heuristics(DEFAULT_PLANNING_HEURISTICS)
 
-        actions = self._build_agent_actions(user_text, cfg)
+        actions = self._build_agent_actions(user_text, cfg, heuristics=heuristics)
         if not actions:
             actions = [
                 AgentAction(
@@ -206,6 +213,7 @@ class LocalAgent:
                 cfg=cfg,
                 context_blocks=context_blocks,
                 provenance=provenance,
+                heuristics=heuristics,
             )
 
             for call in result.get("tool_calls", []):
@@ -287,6 +295,18 @@ class LocalAgent:
         )
 
         self.store.add_message(sid, "assistant", answer)
+        adaptive_update = self._analyze_and_adapt(
+            session_id=sid,
+            task_id=task_id,
+            user_text=user_text,
+            cfg=cfg,
+            plan=plan,
+            tool_calls=tool_calls,
+            provenance=provenance,
+            evidence=evidence,
+            answer=answer,
+            heuristics=heuristics,
+        )
         memory_snapshot = self.store.memory_snapshot(sid, limit=120)
         skills_called = sorted(
             {
@@ -309,6 +329,7 @@ class LocalAgent:
                 "evidence_count": len(evidence),
                 "outcome_id": outcome_id,
                 "llm_used": llm_used,
+                "adaptive_update": adaptive_update,
             },
             provenance=provenance,
         )
@@ -331,10 +352,12 @@ class LocalAgent:
             "outcome_id": outcome_id,
             "memory": memory_snapshot,
             "llm_used": llm_used,
+            "adaptive_update": adaptive_update,
             "original_work_used": {
                 "recursive_adic_ranking": bool(getattr(self.store, "use_recursive_adic", False)),
                 "planner_executor": True,
                 "structured_memory": True,
+                "adaptive_planner": True,
                 "skills_called": skills_called,
                 "evidence_mode_enforced": bool(cfg.evidence_mode),
                 "prefer_local_core": bool(cfg.prefer_local_core),
@@ -343,7 +366,29 @@ class LocalAgent:
             "done": True,
         }
 
-    def _build_agent_actions(self, user_text: str, cfg: AgentRunConfig) -> list[AgentAction]:
+    def _build_agent_actions(
+        self,
+        user_text: str,
+        cfg: AgentRunConfig,
+        heuristics: dict[str, float] | None = None,
+    ) -> list[AgentAction]:
+        heuristics = heuristics or {}
+        docs_priority = _clamp(
+            float(heuristics.get("docs_priority", DEFAULT_PLANNING_HEURISTICS["docs_priority"])),
+            0.1,
+            0.95,
+        )
+        web_priority = _clamp(
+            float(heuristics.get("web_priority", DEFAULT_PLANNING_HEURISTICS["web_priority"])),
+            0.1,
+            0.95,
+        )
+        planner_confidence = _clamp(
+            float(heuristics.get("planner_confidence", DEFAULT_PLANNING_HEURISTICS["planner_confidence"])),
+            0.0,
+            1.0,
+        )
+
         actions: list[AgentAction] = []
         low = user_text.lower()
         research_requested = any(token in low for token in ["research pipeline", "run research", "literature scan"])
@@ -491,13 +536,24 @@ class LocalAgent:
             )
 
         if cfg.allow_docs and not doc_pipeline_requested:
-            actions.append(
-                AgentAction(
-                    tool="docs.retrieve",
-                    title="Retrieve relevant indexed documents",
-                    args={"query": user_text, "limit": 6},
-                )
+            docs_action = AgentAction(
+                tool="docs.retrieve",
+                title="Retrieve relevant indexed documents",
+                args={"query": user_text, "limit": 6},
             )
+            docs_first = docs_priority >= web_priority or planner_confidence < 0.45
+            if docs_first:
+                insert_idx = next(
+                    (
+                        i
+                        for i, a in enumerate(actions)
+                        if a.tool.startswith("web.") or a.tool == "skill.research_pipeline"
+                    ),
+                    len(actions),
+                )
+                actions.insert(insert_idx, docs_action)
+            else:
+                actions.append(docs_action)
 
         actions.append(
             AgentAction(
@@ -517,8 +573,22 @@ class LocalAgent:
         cfg: AgentRunConfig,
         context_blocks: list[str],
         provenance: list[dict[str, object]],
+        heuristics: dict[str, float] | None = None,
     ) -> dict[str, object]:
-        attempts = 2 if action.retryable else 1
+        heuristics = heuristics or {}
+        retry_attempts = int(
+            round(float(heuristics.get("retry_attempts", DEFAULT_PLANNING_HEURISTICS["retry_attempts"])))
+        )
+        retry_attempts = int(_clamp(float(retry_attempts), 1.0, 4.0))
+        planner_confidence = _clamp(
+            float(heuristics.get("planner_confidence", DEFAULT_PLANNING_HEURISTICS["planner_confidence"])),
+            0.0,
+            1.0,
+        )
+        if action.retryable and planner_confidence < 0.4:
+            retry_attempts = min(4, retry_attempts + 1)
+
+        attempts = retry_attempts if action.retryable else 1
         trace: list[dict[str, object]] = []
 
         for attempt in range(1, attempts + 1):
@@ -1147,6 +1217,162 @@ class LocalAgent:
             description=str(item.get("snippet") or "")[:220],
         )
 
+    def _analyze_and_adapt(
+        self,
+        session_id: str,
+        task_id: str,
+        user_text: str,
+        cfg: AgentRunConfig,
+        plan: list[dict[str, object]],
+        tool_calls: list[dict[str, object]],
+        provenance: list[dict[str, object]],
+        evidence: list[dict[str, object]],
+        answer: str,
+        heuristics: dict[str, float],
+    ) -> dict[str, object]:
+        total_steps = len(plan)
+        done_steps = sum(1 for s in plan if str(s.get("status") or "") == "done")
+        error_steps = sum(1 for s in plan if str(s.get("status") or "") == "error")
+        done_ratio = done_steps / max(1, total_steps)
+
+        tool_errors = sum(1 for c in tool_calls if str(c.get("status") or "") == "error")
+        retry_signals = sum(1 for c in tool_calls if str(c.get("status") or "") == "retry")
+        provenance_count = len(provenance)
+        has_answer = bool(answer.strip())
+
+        evidence_good = 0
+        for item in evidence:
+            if not isinstance(item, dict):
+                continue
+            sources = item.get("sources") or []
+            snippets = item.get("snippets") or []
+            if sources and snippets:
+                evidence_good += 1
+
+        success = has_answer and done_ratio >= 0.5
+        if cfg.strict_facts:
+            success = success and provenance_count > 0
+        if cfg.evidence_mode:
+            success = success and evidence_good > 0
+
+        reasons: list[str] = []
+        if not has_answer:
+            reasons.append("empty_answer")
+        if cfg.strict_facts and provenance_count <= 0:
+            reasons.append("no_grounded_provenance")
+        if cfg.evidence_mode and evidence_good <= 0:
+            reasons.append("no_evidence_pairs")
+        if error_steps > 0 or tool_errors > 0:
+            reasons.append("tool_failures")
+        if done_ratio < 0.5:
+            reasons.append("low_plan_completion")
+
+        old_retry = _clamp(
+            float(heuristics.get("retry_attempts", DEFAULT_PLANNING_HEURISTICS["retry_attempts"])),
+            1.0,
+            4.0,
+        )
+        old_docs = _clamp(
+            float(heuristics.get("docs_priority", DEFAULT_PLANNING_HEURISTICS["docs_priority"])),
+            0.1,
+            0.95,
+        )
+        old_web = _clamp(
+            float(heuristics.get("web_priority", DEFAULT_PLANNING_HEURISTICS["web_priority"])),
+            0.1,
+            0.95,
+        )
+        old_conf = _clamp(
+            float(heuristics.get("planner_confidence", DEFAULT_PLANNING_HEURISTICS["planner_confidence"])),
+            0.0,
+            1.0,
+        )
+
+        new_retry = old_retry
+        new_docs = old_docs
+        new_web = old_web
+        new_conf = old_conf
+
+        if success:
+            new_conf = _clamp((old_conf * 0.8) + 0.2, 0.0, 1.0)
+            if tool_errors == 0 and retry_signals == 0 and old_retry > 1.5:
+                new_retry = _clamp(old_retry - 0.25, 1.0, 4.0)
+            if provenance_count >= 2:
+                new_docs = _clamp(old_docs + 0.03, 0.1, 0.95)
+        else:
+            new_conf = _clamp(old_conf * 0.7, 0.0, 1.0)
+            if cfg.allow_docs and provenance_count == 0:
+                new_docs = _clamp(old_docs + 0.08, 0.1, 0.95)
+            if cfg.allow_web and provenance_count == 0:
+                new_web = _clamp(old_web + 0.06, 0.1, 0.95)
+            if tool_errors > 0 or retry_signals > 0:
+                new_retry = _clamp(old_retry + 0.5, 1.0, 4.0)
+
+        updates: dict[str, dict[str, float]] = {}
+        candidates = {
+            "retry_attempts": (old_retry, new_retry),
+            "docs_priority": (old_docs, new_docs),
+            "web_priority": (old_web, new_web),
+            "planner_confidence": (old_conf, new_conf),
+        }
+        for key, (old_value, new_value) in candidates.items():
+            if abs(new_value - old_value) < 0.01:
+                continue
+            self.store.upsert_planning_heuristic(key, new_value, source="adaptive-agent")
+            updates[key] = {
+                "old": round(old_value, 3),
+                "new": round(new_value, 3),
+                "delta": round(new_value - old_value, 3),
+            }
+
+        trigger = ",".join(reasons) if reasons else "success"
+        if success:
+            rule = (
+                "Success pattern: keep grounded planning, preserve docs/web balance, and optimize retries "
+                f"(retry={new_retry:.2f}, docs={new_docs:.2f}, web={new_web:.2f})."
+            )
+        else:
+            rule = (
+                f"Failure pattern ({trigger}): shift planning heuristics toward better grounding "
+                f"(retry={new_retry:.2f}, docs={new_docs:.2f}, web={new_web:.2f})."
+            )
+
+        confidence = _clamp(
+            0.35
+            + (0.35 * done_ratio)
+            + (0.15 if provenance_count > 0 else 0.0)
+            + (0.15 if success else 0.0)
+            - (0.1 * float(tool_errors)),
+            0.05,
+            0.98,
+        )
+        rule_id = self.store.add_improvement_rule(
+            session_id=session_id,
+            task_id=task_id,
+            rule=rule[:500],
+            trigger=trigger[:120],
+            confidence=round(confidence, 3),
+        )
+
+        return {
+            "task_success": bool(success),
+            "failure_reasons": reasons,
+            "heuristic_updates": updates,
+            "improvement_rule_id": rule_id,
+            "improvement_rule": rule,
+            "trigger": trigger,
+            "metrics": {
+                "done_steps": done_steps,
+                "total_steps": total_steps,
+                "tool_errors": tool_errors,
+                "retry_signals": retry_signals,
+                "provenance_count": provenance_count,
+                "evidence_good": evidence_good,
+                "has_answer": has_answer,
+                "query_preview": user_text[:120],
+            },
+        }
+
     def _extract_memory(self, session_id: str, user_text: str) -> None:
         text = user_text.strip()
 
@@ -1372,6 +1598,14 @@ def _provenance_item(
         "url": url,
         "path": path,
     }
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    if value < low:
+        return low
+    if value > high:
+        return high
+    return value
 
 
 def _tokenize_for_match(text: str) -> list[str]:

@@ -97,6 +97,25 @@ class ArtifactItem:
     created_at: int
 
 
+@dataclass
+class PlanningHeuristicItem:
+    key: str
+    value: float
+    source: str
+    updated_at: int
+
+
+@dataclass
+class ImprovementRuleItem:
+    id: int
+    session_id: str
+    task_id: str
+    rule: str
+    trigger: str
+    confidence: float
+    created_at: int
+
+
 class SQLiteStore:
     def __init__(
         self,
@@ -220,6 +239,23 @@ class SQLiteStore:
                     source TEXT NOT NULL DEFAULT '',
                     doc_id TEXT NOT NULL DEFAULT '',
                     description TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS planning_heuristics (
+                    key TEXT PRIMARY KEY,
+                    value REAL NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'adaptive',
+                    updated_at INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS improvement_rules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    rule TEXT NOT NULL,
+                    trigger TEXT NOT NULL DEFAULT '',
+                    confidence REAL NOT NULL DEFAULT 0,
                     created_at INTEGER NOT NULL
                 );
                 """
@@ -466,12 +502,98 @@ class SQLiteStore:
             for r in rows
         ]
 
+    def upsert_planning_heuristic(self, key: str, value: float, source: str = "adaptive") -> None:
+        now = int(time.time())
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO planning_heuristics(key, value, source, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(key)
+                DO UPDATE SET value = excluded.value, source = excluded.source, updated_at = excluded.updated_at
+                """,
+                (key, float(value), source, now),
+            )
+
+    def list_planning_heuristics(self, limit: int = 100) -> list[PlanningHeuristicItem]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT key, value, source, updated_at
+                FROM planning_heuristics
+                ORDER BY updated_at DESC, key ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [
+            PlanningHeuristicItem(
+                key=str(r["key"]),
+                value=float(r["value"]),
+                source=str(r["source"]),
+                updated_at=int(r["updated_at"]),
+            )
+            for r in rows
+        ]
+
+    def get_planning_heuristics(self, defaults: dict[str, float] | None = None) -> dict[str, float]:
+        values = dict(defaults or {})
+        for item in self.list_planning_heuristics(limit=500):
+            values[item.key] = float(item.value)
+        return values
+
+    def add_improvement_rule(
+        self,
+        session_id: str,
+        task_id: str,
+        rule: str,
+        trigger: str = "",
+        confidence: float = 0.0,
+    ) -> int:
+        now = int(time.time())
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO improvement_rules(session_id, task_id, rule, trigger, confidence, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (session_id, task_id, rule, trigger, float(confidence), now),
+            )
+        return int(cursor.lastrowid)
+
+    def list_improvement_rules(self, session_id: str, limit: int = 200) -> list[ImprovementRuleItem]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, session_id, task_id, rule, trigger, confidence, created_at
+                FROM improvement_rules
+                WHERE session_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        return [
+            ImprovementRuleItem(
+                id=int(r["id"]),
+                session_id=str(r["session_id"]),
+                task_id=str(r["task_id"]),
+                rule=str(r["rule"]),
+                trigger=str(r["trigger"]),
+                confidence=float(r["confidence"]),
+                created_at=int(r["created_at"]),
+            )
+            for r in rows
+        ]
+
     def memory_snapshot(self, session_id: str, limit: int = 200) -> dict[str, object]:
         return {
             "facts": [x.__dict__ for x in self.list_facts(session_id, limit=limit)],
             "preferences": [x.__dict__ for x in self.list_preferences(session_id, limit=limit)],
             "outcomes": [x.__dict__ for x in self.list_outcomes(session_id, limit=limit)],
             "artifacts": [x.__dict__ for x in self.list_artifacts(session_id, limit=max(200, limit))],
+            "planning_heuristics": [x.__dict__ for x in self.list_planning_heuristics(limit=100)],
+            "improvement_rules": [x.__dict__ for x in self.list_improvement_rules(session_id, limit=limit)],
         }
 
     def create_task(
