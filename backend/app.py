@@ -82,6 +82,9 @@ AUTH_EXEMPT_PATHS = {"/api/health", "/api/bootstrap"}
 @app.middleware("http")
 async def api_auth_guard(request: Request, call_next):  # type: ignore[no-untyped-def]
     path = request.url.path
+    if request.method.upper() == "OPTIONS":
+        # Let CORS preflight requests pass without token auth.
+        return await call_next(request)
     if REQUIRE_TOKEN and path.startswith("/api/") and path not in AUTH_EXEMPT_PATHS:
         token = request.headers.get("x-ai-token", "").strip()
         if token != API_TOKEN:

@@ -28,3 +28,15 @@ def test_api_requires_token() -> None:
             json={"message": "hello"},
         )
         assert ok.status_code == 200
+
+
+def test_options_preflight_not_blocked_by_auth() -> None:
+    res = client.options(
+        "/api/agent",
+        headers={
+            "Origin": "https://rrg314.github.io",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type,x-ai-token",
+        },
+    )
+    assert res.status_code in {200, 204}
