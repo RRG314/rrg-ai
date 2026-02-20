@@ -464,6 +464,7 @@
       strict_fact_mode: Boolean(state.strictFacts),
       strict_facts: Boolean(state.strictFacts),
       evidence_mode: Boolean(state.evidenceMode),
+      prefer_local_core: true,
       allow_web: true,
       allow_files: true,
       allow_docs: true,
@@ -497,6 +498,7 @@
     const lines = [payload.answer || "(empty response)"];
     lines.push("");
     lines.push(`Agent mode: ${payload.mode || "unknown"} | task_id: ${payload.task_id || "none"}`);
+    lines.push(`Local core used: ${payload.original_work_used ? "yes" : "unknown"} | llm_used: ${Boolean(payload.llm_used)}`);
 
     const plan = Array.isArray(payload.plan) ? payload.plan : [];
     if (plan.length) {

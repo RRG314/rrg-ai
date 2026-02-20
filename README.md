@@ -211,6 +211,7 @@ Skill tools the planner can call:
 Evidence mode behavior:
 - Every returned claim must include a source and snippet from stored provenance.
 - If no grounded source+snippet is available, no factual claim is emitted.
+- By default `prefer_local_core=true`, so planner answers use local pipelines/original systems first and do not depend on Ollama output.
 
 ## Eval Harness
 

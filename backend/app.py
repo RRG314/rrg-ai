@@ -105,6 +105,7 @@ class AgentRequest(BaseModel):
     allow_files: bool = True
     allow_docs: bool = True
     allow_downloads: bool = False
+    prefer_local_core: bool = True
     max_steps: int = 8
 
 
@@ -175,6 +176,7 @@ def run_agent(req: AgentRequest) -> dict[str, object]:
     cfg = AgentRunConfig(
         strict_facts=strict_facts,
         evidence_mode=bool(req.evidence_mode),
+        prefer_local_core=bool(req.prefer_local_core),
         allow_web=bool(req.allow_web),
         allow_files=bool(req.allow_files),
         allow_docs=bool(req.allow_docs),

@@ -25,6 +25,7 @@ class ToolEvent:
 class AgentRunConfig:
     strict_facts: bool = False
     evidence_mode: bool = False
+    prefer_local_core: bool = True
     allow_web: bool = True
     allow_files: bool = True
     allow_docs: bool = True
@@ -188,6 +189,8 @@ class LocalAgent:
         mode = "rules-agent"
         model_status = self.llm.status()
         done = False
+        llm_used = False
+        precomputed_evidence: list[dict[str, object]] = []
 
         for idx, action in enumerate(actions):
             if idx >= cfg.max_steps:
@@ -225,6 +228,9 @@ class LocalAgent:
             if action.tool == "answer.compose" and str(result.get("status")) == "ok":
                 answer = str(result.get("answer") or "")
                 mode = str(result.get("mode") or mode)
+                llm_used = llm_used or bool(result.get("llm_used"))
+                if isinstance(result.get("evidence"), list):
+                    precomputed_evidence = list(result.get("evidence") or [])
                 done = True
 
             self.store.update_task(
@@ -243,13 +249,18 @@ class LocalAgent:
                 break
 
         if not done:
-            answer, mode = self._compose_answer(
-                session_id=sid,
-                user_text=user_text,
-                context_blocks=context_blocks,
-                provenance=provenance,
-                cfg=cfg,
-            )
+            if cfg.evidence_mode:
+                precomputed_evidence = self._build_evidence_from_provenance(user_text, provenance, max_claims=6)
+                answer = _render_evidence_answer(user_text, precomputed_evidence, strict_facts=cfg.strict_facts)
+                mode = "local-evidence"
+            else:
+                answer, mode, llm_used = self._compose_answer(
+                    session_id=sid,
+                    user_text=user_text,
+                    context_blocks=context_blocks,
+                    provenance=provenance,
+                    cfg=cfg,
+                )
             tool_calls.append(
                 {
                     "name": "answer.compose",
@@ -262,8 +273,9 @@ class LocalAgent:
 
         evidence: list[dict[str, object]] = []
         if cfg.evidence_mode:
-            evidence = self._build_evidence_from_provenance(user_text, provenance, max_claims=6)
+            evidence = precomputed_evidence or self._build_evidence_from_provenance(user_text, provenance, max_claims=6)
             answer = _render_evidence_answer(user_text, evidence, strict_facts=cfg.strict_facts)
+            mode = "local-evidence"
 
         citations = _extract_citations(provenance)
         outcome_id = self.store.add_outcome(
@@ -275,6 +287,15 @@ class LocalAgent:
         )
 
         self.store.add_message(sid, "assistant", answer)
+        memory_snapshot = self.store.memory_snapshot(sid, limit=120)
+        skills_called = sorted(
+            {
+                str(call.get("name") or "")
+                for call in tool_calls
+                if str(call.get("name") or "").startswith("skill.")
+            }
+        )
+
         self.store.update_task(
             task_id,
             status="completed",
@@ -287,6 +308,7 @@ class LocalAgent:
                 "citation_count": len(citations),
                 "evidence_count": len(evidence),
                 "outcome_id": outcome_id,
+                "llm_used": llm_used,
             },
             provenance=provenance,
         )
@@ -307,7 +329,17 @@ class LocalAgent:
             "provenance": provenance,
             "evidence": evidence,
             "outcome_id": outcome_id,
-            "memory": self.store.memory_snapshot(sid, limit=120),
+            "memory": memory_snapshot,
+            "llm_used": llm_used,
+            "original_work_used": {
+                "recursive_adic_ranking": bool(getattr(self.store, "use_recursive_adic", False)),
+                "planner_executor": True,
+                "structured_memory": True,
+                "skills_called": skills_called,
+                "evidence_mode_enforced": bool(cfg.evidence_mode),
+                "prefer_local_core": bool(cfg.prefer_local_core),
+                "llm_assist_used": bool(llm_used),
+            },
             "done": True,
         }
 
@@ -804,13 +836,19 @@ class LocalAgent:
             }
 
         if tool == "answer.compose":
-            answer, mode = self._compose_answer(
-                session_id=session_id,
-                user_text=user_text,
-                context_blocks=context_blocks,
-                provenance=provenance,
-                cfg=cfg,
-            )
+            if cfg.evidence_mode:
+                evidence = self._build_evidence_from_provenance(user_text, provenance, max_claims=6)
+                answer = _render_evidence_answer(user_text, evidence, strict_facts=cfg.strict_facts)
+                mode = "local-evidence"
+                llm_used = False
+            else:
+                answer, mode, llm_used = self._compose_answer(
+                    session_id=session_id,
+                    user_text=user_text,
+                    context_blocks=context_blocks,
+                    provenance=provenance,
+                    cfg=cfg,
+                )
             return {
                 "status": "ok",
                 "detail": "Composed final answer",
@@ -818,6 +856,8 @@ class LocalAgent:
                 "provenance": [],
                 "answer": answer,
                 "mode": mode,
+                "llm_used": llm_used,
+                "evidence": evidence if cfg.evidence_mode else [],
             }
 
         raise ValueError(f"Unknown agent tool: {tool}")
@@ -829,7 +869,7 @@ class LocalAgent:
         context_blocks: list[str],
         provenance: list[dict[str, object]],
         cfg: AgentRunConfig,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, bool]:
         facts = self.store.memory_for_session(session_id)[:6]
         if facts:
             context_blocks = [*context_blocks, "Session memory:\n" + "\n".join(_format_fact(f) for f in facts)]
@@ -839,10 +879,11 @@ class LocalAgent:
                 "Strict Fact Mode is ON and no grounded source context is available yet. "
                 "Provide a document/URL/file request or enable additional tools.",
                 "rules-agent",
+                False,
             )
 
         status = self.llm.status()
-        if status.available:
+        if status.available and not cfg.prefer_local_core:
             mode = "ollama-agent"
             try:
                 history = self.store.recent_messages(session_id, limit=12)
@@ -867,7 +908,7 @@ class LocalAgent:
                 )
                 if not answer:
                     raise RuntimeError("Model returned empty answer")
-                return answer, mode
+                return answer, mode, True
             except Exception as exc:
                 return (
                     _fallback_agent_answer(
@@ -878,6 +919,7 @@ class LocalAgent:
                         llm_error=str(exc),
                     ),
                     "rules-agent",
+                    False,
                 )
 
         return (
@@ -886,9 +928,10 @@ class LocalAgent:
                 context_blocks=context_blocks,
                 strict_facts=cfg.strict_facts,
                 provenance=provenance,
-                llm_error="local model unavailable",
+                llm_error="local core mode (LLM assist disabled)" if cfg.prefer_local_core else "local model unavailable",
             ),
             "rules-agent",
+            False,
         )
 
     def _build_evidence_from_provenance(
