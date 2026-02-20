@@ -14,6 +14,8 @@
 - API layer: `backend/app.py`
 - Agent runtime: `backend/agent.py`
 - Plugin runtime: `backend/plugins.py`
+- Entropy routing + consensus: `backend/entropy_routing.py`
+- RDT-LM shell bridge: `backend/rdt_lm_bridge.py`
 - Structured storage/retrieval: `backend/storage.py`
 - Recursive learning: `backend/recursive_learning.py`
 - Tool modules: `backend/tools/*`
@@ -25,13 +27,15 @@
 
 1. `backend/app.py` validates request and builds `AgentRunConfig`.
 2. `LocalAgent.run_agent(...)` initializes task record and planning state.
-3. Planner emits a step sequence and routes steps to tool handlers.
-4. Tool calls execute with retry policy and result summaries.
-5. Provenance is collected from docs/web/files/tool results.
-6. If Evidence Mode is enabled, evidence objects are built from provenance.
-7. Final answer is composed and returned with plan/tool/citation trace.
-8. Post-task reflection computes success/failure and writes heuristic updates.
-9. Recursive learning layer records adaptation events with safety gating.
+3. Entropy router classifies query complexity (`direct`/`focused_rag`/`broad_rag`).
+4. Planner emits a step sequence and routes steps to tool handlers.
+5. Tool calls execute with retry policy and result summaries.
+6. Provenance is collected from docs/web/files/tool results.
+7. If Evidence Mode is enabled, evidence objects are built from provenance.
+8. For high-entropy routes, consensus guard can reconcile primary + alternate answers.
+9. Final answer is composed and returned with plan/tool/citation trace.
+10. Post-task reflection computes success/failure and writes heuristic updates.
+11. Recursive learning layer records adaptation events with safety gating.
 
 ## Tool Routing Domains
 

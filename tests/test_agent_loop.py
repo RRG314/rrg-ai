@@ -231,3 +231,39 @@ def test_agent_recursive_learning_pipeline_tool(tmp_path: Path) -> None:
     sid = str(res.get("session_id") or "")
     events = store.list_recursive_learning_events(sid, limit=5)
     assert events
+
+
+def test_agent_rdt_generation_and_routing_fields(tmp_path: Path) -> None:
+    db = tmp_path / "ai.sqlite3"
+    root = tmp_path / "files"
+    root.mkdir(parents=True, exist_ok=True)
+
+    store = SQLiteStore(db)
+    files = FileBrowser(root)
+    agent = LocalAgent(store=store, files=files, llm=_FakeLLM(), downloads_dir=tmp_path / "downloads")
+
+    cfg = AgentRunConfig(
+        strict_facts=False,
+        evidence_mode=False,
+        allow_web=False,
+        allow_files=False,
+        allow_docs=True,
+        allow_code=False,
+        allow_plugins=False,
+        max_steps=8,
+    )
+    out = agent.run_agent(None, "rdt generate for the man walked", config=cfg)
+    calls = out.get("tool_calls") or []
+    assert any(
+        isinstance(call, dict)
+        and call.get("name") == "rdt.generate"
+        and call.get("status") == "ok"
+        for call in calls
+    )
+    routing = out.get("routing")
+    assert isinstance(routing, dict)
+    assert "mode" in routing
+    assert "entropy" in routing
+    shell = out.get("rdt_shell_alignment")
+    assert isinstance(shell, dict)
+    assert "shell_overlap" in shell

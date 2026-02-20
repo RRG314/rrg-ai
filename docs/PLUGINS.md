@@ -23,6 +23,9 @@ plugins/
   text_tools/
     plugin.json
     run.py
+  rdt_lm_tools/
+    plugin.json
+    run.py
 ```
 
 ## Manifest (`plugin.json`)
@@ -84,6 +87,10 @@ Agent supports plugin commands in natural prompts:
 - `list plugins`
 - `run plugin <plugin_id> with <input>`
 - `plugin <plugin_id>: <input>`
+
+RDT-specific examples:
+- `run plugin rdt_lm_tools with {"mode":"analyze","text":"recursive adic shell depth"}`
+- `run plugin rdt_lm_tools with {"mode":"generate","seed":"the man walked","max_length":12}`
 
 ## Safety Notes
 

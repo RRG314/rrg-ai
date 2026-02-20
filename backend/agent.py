@@ -6,8 +6,10 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from .entropy_routing import ConsensusGuard, EntropyRouter, RouteDecision
 from .llm import OllamaClient
 from .plugins import PluginManager
+from .rdt_lm_bridge import RDTNgramGenerator, default_rdt_sentences, shell_alignment_score
 from .recursive_learning import RecursiveLearningLayer
 from .skills import doc_pipeline, folder_audit_pipeline, research_pipeline
 from .storage import MemoryFact, SQLiteStore
@@ -71,6 +73,10 @@ class LocalAgent:
         self.downloads_dir = Path(downloads_dir)
         self.downloads_dir.mkdir(parents=True, exist_ok=True)
         self.plugins = plugins
+        self.entropy_router = EntropyRouter()
+        self.consensus_guard = ConsensusGuard()
+        self.rdt_shell_generator = RDTNgramGenerator(alpha=float(getattr(self.store, "radf_alpha", 1.5)))
+        self.rdt_shell_generator.fit(default_rdt_sentences())
         recursive_repo_root = repo_collection_root if repo_collection_root is not None else self.files.root
         self.recursive_learning = RecursiveLearningLayer(
             store=self.store,
@@ -173,8 +179,9 @@ class LocalAgent:
         self.store.add_message(sid, "user", user_text)
         self._extract_memory(sid, user_text)
         heuristics = self.store.get_planning_heuristics(DEFAULT_PLANNING_HEURISTICS)
+        route = self.entropy_router.decide(user_text, default_k=6)
 
-        actions = self._build_agent_actions(user_text, cfg, heuristics=heuristics)
+        actions = self._build_agent_actions(user_text, cfg, heuristics=heuristics, route=route)
         if not actions:
             actions = [
                 AgentAction(
@@ -297,6 +304,28 @@ class LocalAgent:
                 }
             )
 
+        consensus_similarity = 1.0
+        if not cfg.evidence_mode and bool(route.use_consensus):
+            secondary = _fallback_agent_answer(
+                user_text=user_text,
+                context_blocks=context_blocks,
+                strict_facts=cfg.strict_facts,
+                provenance=provenance,
+                llm_error="consensus cross-check",
+            )
+            harmonized, consensus_similarity = self.consensus_guard.harmonize(answer, secondary)
+            if harmonized != answer:
+                answer = harmonized
+            tool_calls.append(
+                {
+                    "name": "consensus.guard",
+                    "args": {"mode": route.mode, "entropy": route.entropy},
+                    "attempt": 1,
+                    "status": "ok",
+                    "result_summary": f"Consensus similarity={consensus_similarity:.3f}",
+                }
+            )
+
         evidence: list[dict[str, object]] = []
         if cfg.evidence_mode:
             evidence = precomputed_evidence or self._build_evidence_from_provenance(user_text, provenance, max_claims=6)
@@ -325,6 +354,16 @@ class LocalAgent:
             answer=answer,
             heuristics=heuristics,
         )
+        snippet_rows = [str(item.get("snippet") or "") for item in provenance if isinstance(item, dict)]
+        shell_alignment = shell_alignment_score(user_text, snippet_rows, alpha=float(getattr(self.store, "radf_alpha", 1.5)))
+        adaptive_update["rdt_shell_alignment"] = shell_alignment
+        adaptive_update["routing"] = {
+            "mode": route.mode,
+            "entropy": route.entropy,
+            "retrieval_k": route.retrieval_k,
+            "use_consensus": route.use_consensus,
+            "consensus_similarity": consensus_similarity,
+        }
         recursive_learning_update = self.recursive_learning.adapt(
             session_id=sid,
             task_id=task_id,
@@ -363,6 +402,14 @@ class LocalAgent:
                 "llm_used": llm_used,
                 "adaptive_update": adaptive_update,
                 "recursive_learning": recursive_learning_update,
+                "routing": {
+                    "mode": route.mode,
+                    "entropy": route.entropy,
+                    "retrieval_k": route.retrieval_k,
+                    "use_consensus": route.use_consensus,
+                    "consensus_similarity": consensus_similarity,
+                },
+                "rdt_shell_alignment": shell_alignment,
             },
             provenance=provenance,
         )
@@ -387,12 +434,23 @@ class LocalAgent:
             "llm_used": llm_used,
             "adaptive_update": adaptive_update,
             "recursive_learning": recursive_learning_update,
+            "routing": {
+                "mode": route.mode,
+                "entropy": route.entropy,
+                "retrieval_k": route.retrieval_k,
+                "use_consensus": route.use_consensus,
+                "consensus_similarity": consensus_similarity,
+            },
+            "rdt_shell_alignment": shell_alignment,
             "original_work_used": {
                 "recursive_adic_ranking": bool(getattr(self.store, "use_recursive_adic", False)),
                 "planner_executor": True,
                 "structured_memory": True,
                 "adaptive_planner": True,
                 "recursive_learning_layer": True,
+                "entropy_router": True,
+                "consensus_guard": bool(route.use_consensus),
+                "rdt_lm_shell_bridge": True,
                 "skills_called": skills_called,
                 "evidence_mode_enforced": bool(cfg.evidence_mode),
                 "prefer_local_core": bool(cfg.prefer_local_core),
@@ -432,6 +490,7 @@ class LocalAgent:
         user_text: str,
         cfg: AgentRunConfig,
         heuristics: dict[str, float] | None = None,
+        route: RouteDecision | None = None,
     ) -> list[AgentAction]:
         heuristics = heuristics or {}
         docs_priority = _clamp(
@@ -464,8 +523,19 @@ class LocalAgent:
                 "radf pipeline",
             ]
         )
+        rdt_generate_requested = any(
+            token in low
+            for token in [
+                "rdt lm generate",
+                "rdt generate",
+                "shell generate",
+                "generate with rdt",
+                "rdt text generation",
+            ]
+        )
         plugin_list_requested = _looks_like_plugin_list_request(low)
         plugin_call = _extract_plugin_call(user_text)
+        route_retrieval_k = int(route.retrieval_k) if route is not None else 6
 
         if cfg.allow_plugins and plugin_list_requested:
             actions.append(
@@ -484,6 +554,17 @@ class LocalAgent:
                     title=f"Run plugin {plugin_id}",
                     args={"plugin_id": plugin_id, "input": plugin_input},
                     retryable=True,
+                )
+            )
+
+        if cfg.allow_docs and rdt_generate_requested:
+            seed = _extract_rdt_seed(user_text)
+            actions.append(
+                AgentAction(
+                    tool="rdt.generate",
+                    title=f"Generate text with RDT shell model from '{seed}'",
+                    args={"seed": seed, "max_length": 18},
+                    retryable=False,
                 )
             )
 
@@ -686,24 +767,27 @@ class LocalAgent:
             )
 
         if cfg.allow_docs and not doc_pipeline_requested:
-            docs_action = AgentAction(
-                tool="docs.retrieve",
-                title="Retrieve relevant indexed documents",
-                args={"query": user_text, "limit": 6},
-            )
-            docs_first = docs_priority >= web_priority or planner_confidence < 0.45
-            if docs_first:
-                insert_idx = next(
-                    (
-                        i
-                        for i, a in enumerate(actions)
-                        if a.tool.startswith("web.") or a.tool == "skill.research_pipeline"
-                    ),
-                    len(actions),
+            should_attach_docs = bool(route_retrieval_k > 0) or cfg.strict_facts or cfg.evidence_mode
+            if should_attach_docs:
+                docs_limit = route_retrieval_k if route_retrieval_k > 0 else 4
+                docs_action = AgentAction(
+                    tool="docs.retrieve",
+                    title="Retrieve relevant indexed documents",
+                    args={"query": user_text, "limit": docs_limit},
                 )
-                actions.insert(insert_idx, docs_action)
-            else:
-                actions.append(docs_action)
+                docs_first = docs_priority >= web_priority or planner_confidence < 0.45
+                if docs_first:
+                    insert_idx = next(
+                        (
+                            i
+                            for i, a in enumerate(actions)
+                            if a.tool.startswith("web.") or a.tool == "skill.research_pipeline"
+                        ),
+                        len(actions),
+                    )
+                    actions.insert(insert_idx, docs_action)
+                else:
+                    actions.append(docs_action)
 
         actions.append(
             AgentAction(
@@ -929,6 +1013,37 @@ class LocalAgent:
                 "status": status,
                 "detail": out.summary,
                 "context_block": f"Plugin {out.plugin_id} output:\n{rendered[:7000]}",
+                "provenance": prov,
+            }
+
+        if tool == "rdt.generate":
+            seed = str(action.args.get("seed") or user_text).strip()
+            max_length = int(action.args.get("max_length") or 15)
+            generated = self.rdt_shell_generator.generate(seed, max_length=max(4, min(max_length, 32)))
+            shell = shell_alignment_score(seed, [generated], alpha=float(getattr(self.store, "radf_alpha", 1.5)))
+            text = (
+                f"RDT shell generation:\nseed: {seed}\noutput: {generated}\n"
+                f"shell_overlap: {shell.get('shell_overlap', 0.0):.3f}\n"
+                f"token_overlap: {shell.get('token_overlap', 0.0):.3f}"
+            )
+            doc_id = self.store.add_document(
+                name=f"rdt-generate:{seed[:64]}",
+                source="rdt_lm_bridge",
+                kind="rdt-generation",
+                text=text,
+            )
+            prov = [
+                _provenance_item(
+                    source_type="doc",
+                    source="rdt_lm_bridge",
+                    snippet=text[:320],
+                    doc_id=doc_id,
+                )
+            ]
+            return {
+                "status": "ok",
+                "detail": "Generated RDT shell-aware continuation",
+                "context_block": text,
                 "provenance": prov,
             }
 
@@ -2237,6 +2352,19 @@ def _extract_plugin_call(text: str) -> tuple[str, str] | None:
     return None
 
 
+def _extract_rdt_seed(text: str) -> str:
+    m = re.search(
+        r"\b(?:rdt lm generate|rdt generate|shell generate|generate with rdt|rdt text generation)\s+(?:for|from|on|with)?\s*(.+)$",
+        text,
+        re.IGNORECASE,
+    )
+    if m:
+        seed = m.group(1).strip().strip("`\"")
+        if seed:
+            return seed
+    return text.strip()
+
+
 def _extract_optional_cwd(text: str) -> str:
     m = re.search(r"\b(?:in|at)\s+([~./A-Za-z0-9_\-][^\n]{0,200})$", text.strip(), re.IGNORECASE)
     if not m:
@@ -2744,6 +2872,10 @@ def _infer_task_type(user_text: str, tool_calls: list[dict[str, object]]) -> str
         token in low for token in ("folder audit", "repo audit", "audit folder", "audit repo")
     ):
         return "folder_audit"
+    if any(name == "rdt.generate" for name in names) or any(
+        token in low for token in ("rdt lm", "rdt generate", "shell generate")
+    ):
+        return "rdt_lm"
     if any(name.startswith("plugin.") for name in names) or any(token in low for token in ("run plugin", "plugin ")):
         return "plugin"
     if any(name.startswith("code.") or name == "math.eval" for name in names) or any(

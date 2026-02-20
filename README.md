@@ -19,6 +19,8 @@ The project is designed for private local use first: chat, retrieval, tools, evi
 - Structured memory (`facts`, `preferences`, `outcomes`, `artifacts`)
 - Adaptive post-task reflection and planning heuristic updates
 - Recursive-Adic retrieval scoring integrated in storage ranking
+- Entropy-routed planning + consensus guard (ported from prior modular Colab engine)
+- RDT-LM shell bridge (ported from `rdt_lm.ipynb`) for shell-depth analysis/generation
 - Local evaluation suites (`eval`, `industry_bench`, `system_check`)
 - Benchmark run isolation by default (fresh DB/data per run)
 
@@ -36,6 +38,10 @@ This project includes original system combinations and research-driven integrati
   - Optional local LLM inference via Ollama (not required for core tooling mode)
 - Scope boundary:
   - This release does not claim solved AGI; it provides a modular local agent platform for grounded chat, tool use, and measurable iteration.
+
+Notebook-derived integrations now included:
+- `rdt_lm.ipynb` concepts integrated via `backend/rdt_lm_bridge.py` and `plugins/rdt_lm_tools/`
+- Prior modular Colab engine routing/consensus ideas integrated via `backend/entropy_routing.py`
 
 ## Related Repositories and Research Links
 
@@ -156,6 +162,7 @@ RRG AI supports local plugins so people can add custom tools without changing co
 
 Included example plugin:
 - `plugins/text_tools/` (token/term stats for input text)
+- `plugins/rdt_lm_tools/` (RDT shell-depth analysis + shell-aware generation)
 
 Plugin authoring guide: [`docs/PLUGINS.md`](docs/PLUGINS.md).
 

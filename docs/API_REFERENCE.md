@@ -74,6 +74,8 @@ Response (shape):
   "evidence": [],
   "memory": {},
   "adaptive_update": {},
+  "routing": {},
+  "rdt_shell_alignment": {},
   "original_work_used": {}
 }
 ```
