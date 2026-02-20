@@ -45,6 +45,7 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     session_id: str | None = None
+    strict_facts: bool = False
 
 
 class URLRequest(BaseModel):
@@ -85,7 +86,7 @@ def health() -> dict[str, object]:
 @app.post("/api/chat")
 def chat(req: ChatRequest) -> dict[str, object]:
     try:
-        return agent.chat(req.session_id, req.message)
+        return agent.chat(req.session_id, req.message, strict_facts=req.strict_facts)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

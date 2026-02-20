@@ -24,21 +24,29 @@ Local-first modular AI system with an HTML chat UI plus a Python backend for:
 
 ## Quick Start (Local Full Mode)
 
+Fastest path (no manual backend URL entry):
+
 ```bash
 cd /Users/stevenreid/Documents/New\ project/repo_audit/rrg314/ai
+./start_local_ai.sh
+```
+
+macOS double-click launcher: `start_local_ai.command`
+
+Or run manually:
+
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
-```
-
-Then open `index.html` with a local web server, for example:
-
-```bash
 python3 -m http.server 5173
 ```
 
-Open [http://127.0.0.1:5173](http://127.0.0.1:5173), set backend URL to `http://127.0.0.1:8000`, and click **Connect Backend**.
+Open [http://127.0.0.1:5173](http://127.0.0.1:5173). The UI auto-detects the backend (`same origin`, `127.0.0.1:8000`, `localhost:8000`) and connects automatically.
+You only need `Connect Backend` if you want to override URL manually.
+
+Strict Fact Mode is enabled by default in the UI.
 
 Example prompts:
 - `define entropy`

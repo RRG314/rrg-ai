@@ -29,8 +29,14 @@
 
         <section class="chat-panel">
           <section class="toolbar">
+            <div class="row row-tight">
+              <label class="check">
+                <input id="strict-facts" type="checkbox" checked />
+                Strict Fact Mode (cite sources, avoid unsupported claims)
+              </label>
+            </div>
             <div class="row">
-              <input id="backend-url" type="text" placeholder="Backend URL (blank = same origin)" />
+              <input id="backend-url" type="text" placeholder="Backend URL (auto-detected if blank)" />
               <button id="connect-backend" class="ghost">Connect Backend</button>
             </div>
             <div class="row">

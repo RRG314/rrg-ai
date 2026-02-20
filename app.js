@@ -16,11 +16,13 @@
     uploadButton: document.getElementById("upload-button"),
     ingestUrl: document.getElementById("ingest-url"),
     ingestButton: document.getElementById("ingest-button"),
+    strictFacts: document.getElementById("strict-facts"),
   };
 
   const runtime = {
     backendOnline: false,
     backendMode: "static-browser",
+    backendBase: "",
     modelAvailable: false,
     model: "",
     modelReason: "",
@@ -33,9 +35,13 @@
   }
 
   ui.backendUrl.value = state.backendUrl || "";
+  ui.strictFacts.checked = state.strictFacts !== false;
 
   renderAll();
   checkBackend(false);
+  window.setInterval(() => {
+    checkBackend(false);
+  }, 15000);
 
   ui.chatForm.addEventListener("submit", onSubmit);
   ui.newSession.addEventListener("click", onNewSession);
@@ -43,6 +49,7 @@
   ui.connectBackend.addEventListener("click", onConnectBackend);
   ui.uploadButton.addEventListener("click", onUpload);
   ui.ingestButton.addEventListener("click", onIngest);
+  ui.strictFacts.addEventListener("change", onStrictFactsChanged);
 
   async function onSubmit(event) {
     event.preventDefault();
@@ -94,6 +101,11 @@
     state.backendUrl = (ui.backendUrl.value || "").trim();
     saveState();
     await checkBackend(true);
+  }
+
+  function onStrictFactsChanged() {
+    state.strictFacts = Boolean(ui.strictFacts.checked);
+    saveState();
   }
 
   async function onUpload() {
@@ -176,43 +188,52 @@
   }
 
   async function checkBackend(showMessage) {
-    try {
-      const response = await fetch(apiUrl("/api/health"), {
-        method: "GET",
-        cache: "no-store",
-      });
+    const candidates = discoverBackendCandidates();
+    let connected = false;
 
-      if (!response.ok) throw new Error(`health ${response.status}`);
+    for (const base of candidates) {
+      try {
+        const payload = await healthCheck(base);
 
-      const payload = await response.json();
-      runtime.backendOnline = Boolean(payload.ok);
-      runtime.backendMode = payload.backend || "local-python";
-      runtime.modelAvailable = Boolean(payload.model_available);
-      runtime.model = payload.model || "";
-      runtime.modelReason = payload.model_reason || "";
+        runtime.backendOnline = Boolean(payload.ok);
+        runtime.backendMode = payload.backend || "local-python";
+        runtime.backendBase = base;
+        runtime.modelAvailable = Boolean(payload.model_available);
+        runtime.model = payload.model || "";
+        runtime.modelReason = payload.model_reason || "";
 
-      if (showMessage) {
-        addBubble(
-          "ai",
-          `Backend connected: ${runtime.backendMode}\nmodel: ${runtime.model || "none"}\nmodel_available: ${runtime.modelAvailable}`
-        );
+        state.backendUrl = base;
+        ui.backendUrl.value = base;
+        saveState();
+
+        if (showMessage) {
+          addBubble(
+            "ai",
+            `Backend connected: ${runtime.backendMode}\nurl: ${base}\nmodel: ${runtime.model || "none"}\nmodel_available: ${runtime.modelAvailable}`
+          );
+        }
+
+        connected = true;
+        break;
+      } catch {
+        // Try next candidate.
       }
-    } catch (err) {
+    }
+
+    if (!connected) {
       runtime.backendOnline = false;
       runtime.backendMode = "static-browser";
+      runtime.backendBase = "";
       runtime.modelAvailable = false;
       runtime.model = "";
-      runtime.modelReason = String(err);
+      runtime.modelReason = "No backend candidate responded";
 
       if (showMessage) {
-        addBubble(
-          "ai",
-          "Backend not reachable. Running static browser mode only."
-        );
+        addBubble("ai", "Backend not reachable. Running static browser mode only.");
       }
-    } finally {
-      renderStatus();
     }
+
+    renderStatus();
   }
 
   async function backendRespond(text, sessionId) {
@@ -221,7 +242,11 @@
     const response = await fetch(apiUrl("/api/chat"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text, session_id: sessionId }),
+      body: JSON.stringify({
+        message: text,
+        session_id: sessionId,
+        strict_facts: Boolean(state.strictFacts),
+      }),
     });
 
     const payload = await response.json();
@@ -256,10 +281,46 @@
   }
 
   function apiUrl(path) {
-    const raw = (state.backendUrl || "").trim();
+    const raw = (runtime.backendBase || state.backendUrl || "").trim();
     if (!raw) return path;
     const base = raw.endsWith("/") ? raw.slice(0, -1) : raw;
     return `${base}${path}`;
+  }
+
+  function discoverBackendCandidates() {
+    const values = [];
+    const add = (v) => {
+      const cleaned = (v || "").trim().replace(/\/+$/, "");
+      if (!cleaned) return;
+      if (!values.includes(cleaned)) values.push(cleaned);
+    };
+
+    add(state.backendUrl || "");
+    add(ui.backendUrl.value || "");
+
+    if (window.location.protocol !== "file:") {
+      add(window.location.origin);
+    }
+
+    add("http://127.0.0.1:8000");
+    add("http://localhost:8000");
+    return values;
+  }
+
+  async function healthCheck(base) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 2500);
+    try {
+      const response = await fetch(`${base}/api/health`, {
+        method: "GET",
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`health ${response.status}`);
+      return await response.json();
+    } finally {
+      window.clearTimeout(timeout);
+    }
   }
 
   function staticRespond(text, sessionId) {
@@ -281,6 +342,10 @@
       "Response:",
       "I can still provide planning and memory-based help from browser state.",
     ];
+
+    if (state.strictFacts !== false) {
+      lines.push("Strict facts mode is ON, but static mode has limited source verification.");
+    }
 
     if (hits.length) {
       lines.push("", "Grounding:");
@@ -502,9 +567,11 @@
 
     const backend = runtime.backendOnline ? "online" : "offline";
     const model = runtime.modelAvailable ? runtime.model : "none";
+    const strictFacts = state.strictFacts !== false ? "on" : "off";
+    const backendBase = runtime.backendBase || state.backendUrl || "none";
 
     ui.status.textContent =
-      `mode: ${runtime.backendMode} (${backend}) | model: ${model} | ` +
+      `mode: ${runtime.backendMode} (${backend}) | strict_facts: ${strictFacts} | model: ${model} | backend: ${backendBase} | ` +
       `docs(static): ${docs} | sessions: ${sessions} | facts: ${facts}`;
   }
 
@@ -569,16 +636,17 @@
   function loadState() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return { sessions: {}, facts: {}, currentSessionId: "", backendUrl: "" };
+      if (!raw) return { sessions: {}, facts: {}, currentSessionId: "", backendUrl: "", strictFacts: true };
       const parsed = JSON.parse(raw);
       return {
         sessions: parsed.sessions || {},
         facts: parsed.facts || {},
         currentSessionId: parsed.currentSessionId || "",
         backendUrl: parsed.backendUrl || "",
+        strictFacts: parsed.strictFacts !== false,
       };
     } catch {
-      return { sessions: {}, facts: {}, currentSessionId: "", backendUrl: "" };
+      return { sessions: {}, facts: {}, currentSessionId: "", backendUrl: "", strictFacts: true };
     }
   }
 })();

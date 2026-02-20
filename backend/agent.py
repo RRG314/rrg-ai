@@ -34,7 +34,7 @@ class LocalAgent:
         self.downloads_dir = Path(downloads_dir)
         self.downloads_dir.mkdir(parents=True, exist_ok=True)
 
-    def chat(self, session_id: str | None, user_text: str) -> dict[str, object]:
+    def chat(self, session_id: str | None, user_text: str, strict_facts: bool = False) -> dict[str, object]:
         sid = self.store.ensure_session(session_id, title=user_text[:60] or "Chat")
         self.store.add_message(sid, "user", user_text)
         self._extract_memory(sid, user_text)
@@ -44,6 +44,20 @@ class LocalAgent:
 
         self._run_file_tools(user_text, tool_events, context_blocks)
         self._run_web_tools(user_text, tool_events, context_blocks)
+
+        if strict_facts and not context_blocks:
+            try:
+                results = search_web(user_text, max_results=5)
+                if results:
+                    rendered = "\n".join(
+                        f"- {item['title']}\n  {item['url']}\n  {item['snippet']}" for item in results
+                    )
+                    context_blocks.append(f"Auto web grounding for strict mode:\n{rendered}")
+                tool_events.append(
+                    ToolEvent("web.search.auto", "ok", f"Auto-grounding returned {len(results)} results")
+                )
+            except Exception as exc:
+                tool_events.append(ToolEvent("web.search.auto", "error", str(exc)))
 
         doc_hits = self.store.search_chunks(user_text, limit=5)
         if doc_hits:
@@ -72,22 +86,23 @@ class LocalAgent:
                         + context
                     )
                 prompt_messages = history[:-1] + [{"role": "user", "content": augmented_user}]
-                answer = self.llm.chat(prompt_messages, _system_prompt(self.files.root))
+                answer = self.llm.chat(prompt_messages, _system_prompt(self.files.root, strict_facts))
                 if not answer:
                     raise RuntimeError("Model returned empty answer")
             except Exception as exc:
                 mode = "rules-fallback"
                 tool_events.append(ToolEvent("llm", "error", f"Ollama call failed: {exc}"))
-                answer = _fallback_answer(user_text, tool_events, context_blocks)
+                answer = _fallback_answer(user_text, tool_events, context_blocks, strict_facts)
         else:
             mode = "rules"
-            answer = _fallback_answer(user_text, tool_events, context_blocks)
+            answer = _fallback_answer(user_text, tool_events, context_blocks, strict_facts)
 
         self.store.add_message(sid, "assistant", answer)
         return {
             "session_id": sid,
             "answer": answer,
             "mode": mode,
+            "strict_facts": strict_facts,
             "model": status.model,
             "model_available": status.available,
             "model_reason": status.reason,
@@ -237,21 +252,31 @@ def _format_fact(fact: MemoryFact) -> str:
     return f"- {fact.key}: {fact.value}"
 
 
-def _system_prompt(files_root: Path) -> str:
-    return (
+def _system_prompt(files_root: Path, strict_facts: bool) -> str:
+    prompt = (
         "You are a local, modular AI assistant focused on practical execution. "
         "Use provided tool context (web results, fetched pages, files, and indexed documents) "
         "to answer with concrete details. If data is missing, say exactly what is missing. "
         "When citing sources, include URLs or file paths explicitly. "
         f"You can access files under this root: {files_root}."
     )
+    if strict_facts:
+        prompt += (
+            " Strict facts mode is enabled: do not invent facts. "
+            "Only state factual claims that are supported by provided sources. "
+            "If sources are insufficient, explicitly say verification is insufficient."
+        )
+    return prompt
 
 
-def _fallback_answer(user_text: str, events: list[ToolEvent], context_blocks: list[str]) -> str:
+def _fallback_answer(user_text: str, events: list[ToolEvent], context_blocks: list[str], strict_facts: bool) -> str:
     lines = [
         "Running in local rules mode (no local model available).",
         "Install/start Ollama and a model for stronger free-form chat quality.",
     ]
+
+    if strict_facts:
+        lines.append("Strict facts mode is ON: unsupported claims are blocked.")
 
     if events:
         lines.append("")
@@ -267,10 +292,13 @@ def _fallback_answer(user_text: str, events: list[ToolEvent], context_blocks: li
             lines.append(f"- {summary}")
     else:
         lines.append("")
-        lines.append(
-            "I can already do: dictionary definitions, web search, website fetch, URL downloads, file listing/reading/search, "
-            "document upload/index, and persistent chat memory."
-        )
+        if strict_facts:
+            lines.append("No source context was found yet. Ask me to search web/files or provide a URL/document.")
+        else:
+            lines.append(
+                "I can already do: dictionary definitions, web search, website fetch, URL downloads, file listing/reading/search, "
+                "document upload/index, and persistent chat memory."
+            )
 
     lines.append("")
     lines.append(f"Request handled: {user_text[:160]}")
