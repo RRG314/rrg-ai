@@ -12,7 +12,7 @@ from .llm import OllamaClient
 from .storage import SQLiteStore
 from .tools.docs import extract_text_from_bytes
 from .tools.filesystem import FileBrowser
-from .tools.web import download_url, fetch_url_text, search_web
+from .tools.web import dictionary_define, download_url, fetch_url_text, search_web
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -53,6 +53,10 @@ class URLRequest(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str
+
+
+class DefineRequest(BaseModel):
+    word: str
 
 
 class FileReadRequest(BaseModel):
@@ -138,6 +142,14 @@ def search(req: SearchRequest) -> dict[str, object]:
     try:
         results = search_web(req.query, max_results=8)
         return {"query": req.query, "results": results}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/define")
+def define(req: DefineRequest) -> dict[str, object]:
+    try:
+        return dictionary_define(req.word, max_definitions=8)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

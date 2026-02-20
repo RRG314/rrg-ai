@@ -88,6 +88,19 @@ def download_url(url: str, output_dir: Path, max_bytes: int = 40 * 1024 * 1024) 
     }
 
 
+def dictionary_define(word: str, max_definitions: int = 6) -> dict[str, object]:
+    clean = _normalize_word(word)
+    if not clean:
+        raise ValueError("Word is empty after normalization")
+
+    url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{urllib.parse.quote(clean)}"
+    response = requests.get(url, timeout=20, headers=HEADERS)
+    response.raise_for_status()
+
+    payload = response.json()
+    return _parse_dictionary_payload(clean, payload, max_definitions=max_definitions)
+
+
 def _extract_html_text(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
 
@@ -129,3 +142,62 @@ def _filename_from_response(url: str, content_disposition: str | None) -> str:
 def _sanitize_filename(name: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._")
     return safe or "download.bin"
+
+
+def _parse_dictionary_payload(
+    word: str,
+    payload: object,
+    max_definitions: int = 6,
+) -> dict[str, object]:
+    if not isinstance(payload, list) or not payload:
+        raise ValueError(f"No dictionary entries found for '{word}'")
+
+    first = payload[0]
+    if not isinstance(first, dict):
+        raise ValueError(f"Invalid dictionary response for '{word}'")
+
+    normalized = str(first.get("word") or word)
+    phonetic = str(first.get("phonetic") or "")
+
+    definitions: list[dict[str, str]] = []
+    meanings = first.get("meanings", [])
+    if isinstance(meanings, list):
+        for meaning in meanings:
+            if not isinstance(meaning, dict):
+                continue
+            part = str(meaning.get("partOfSpeech") or "")
+            defs = meaning.get("definitions", [])
+            if not isinstance(defs, list):
+                continue
+            for item in defs:
+                if not isinstance(item, dict):
+                    continue
+                text = str(item.get("definition") or "").strip()
+                if not text:
+                    continue
+                example = str(item.get("example") or "").strip()
+                definitions.append(
+                    {
+                        "part_of_speech": part,
+                        "definition": text,
+                        "example": example,
+                    }
+                )
+                if len(definitions) >= max_definitions:
+                    break
+            if len(definitions) >= max_definitions:
+                break
+
+    if not definitions:
+        raise ValueError(f"No dictionary definitions found for '{word}'")
+
+    return {
+        "word": normalized,
+        "phonetic": phonetic,
+        "definitions": definitions,
+        "source": "dictionaryapi.dev",
+    }
+
+
+def _normalize_word(word: str) -> str:
+    return re.sub(r"[^A-Za-z'-]", "", word).strip().lower()

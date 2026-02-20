@@ -7,7 +7,7 @@ from pathlib import Path
 from .llm import OllamaClient
 from .storage import MemoryFact, SQLiteStore
 from .tools.filesystem import FileBrowser
-from .tools.web import download_url, fetch_url_text, search_web
+from .tools.web import dictionary_define, download_url, fetch_url_text, search_web
 
 
 URL_RE = re.compile(r"https?://[^\s)\]}>\"']+", flags=re.IGNORECASE)
@@ -146,6 +146,28 @@ class LocalAgent:
     def _run_web_tools(self, user_text: str, tool_events: list[ToolEvent], context_blocks: list[str]) -> None:
         low = user_text.lower()
 
+        dict_term = _extract_dictionary_term(user_text)
+        if dict_term:
+            try:
+                entry = dictionary_define(dict_term, max_definitions=6)
+                lines = []
+                for row in entry["definitions"]:
+                    part = str(row.get("part_of_speech") or "").strip()
+                    definition = str(row.get("definition") or "").strip()
+                    example = str(row.get("example") or "").strip()
+                    prefix = f"{part}: " if part else ""
+                    line = f"- {prefix}{definition}"
+                    if example:
+                        line += f" | example: {example}"
+                    lines.append(line)
+                context_blocks.append(
+                    f"Dictionary facts for '{entry['word']}' (source: {entry['source']}):\n"
+                    + "\n".join(lines)
+                )
+                tool_events.append(ToolEvent("web.dictionary", "ok", f"Found {len(lines)} definitions for '{dict_term}'"))
+            except Exception as exc:
+                tool_events.append(ToolEvent("web.dictionary", "error", f"{dict_term}: {exc}"))
+
         search_match = re.search(
             r"\b(?:search|look up|find|research)\s+(?:the\s+web|web|internet)?\s*(?:for)?\s+(.+)",
             user_text,
@@ -246,10 +268,23 @@ def _fallback_answer(user_text: str, events: list[ToolEvent], context_blocks: li
     else:
         lines.append("")
         lines.append(
-            "I can already do: web search, website fetch, URL downloads, file listing/reading/search, "
+            "I can already do: dictionary definitions, web search, website fetch, URL downloads, file listing/reading/search, "
             "document upload/index, and persistent chat memory."
         )
 
     lines.append("")
     lines.append(f"Request handled: {user_text[:160]}")
     return "\n".join(lines)
+
+
+def _extract_dictionary_term(text: str) -> str:
+    patterns = [
+        r"\bdefine\s+([A-Za-z][A-Za-z\-']{1,63})\b",
+        r"\bdefinition of\s+([A-Za-z][A-Za-z\-']{1,63})\b",
+        r"\bwhat does\s+([A-Za-z][A-Za-z\-']{1,63})\s+mean\b",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            return m.group(1).strip().lower()
+    return ""

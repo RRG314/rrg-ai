@@ -5,6 +5,7 @@ Local-first modular AI system with an HTML chat UI plus a Python backend for:
 - Natural chat with persistent session memory
 - Internet search and website content extraction
 - URL downloading to local disk
+- Dictionary definitions from a live source (`dictionaryapi.dev`)
 - Document upload/indexing (TXT/MD/PDF/DOCX)
 - Local file browsing, reading, and text search
 - Optional local LLM via Ollama (no cloud dependency required)
@@ -39,6 +40,12 @@ python3 -m http.server 5173
 
 Open [http://127.0.0.1:5173](http://127.0.0.1:5173), set backend URL to `http://127.0.0.1:8000`, and click **Connect Backend**.
 
+Example prompts:
+- `define entropy`
+- `what does theorem mean`
+- `search the web for latest retrieval benchmarks`
+- `read file /Users/stevenreid/Documents/paper.txt`
+
 ## Terminal Chat
 
 ```bash
@@ -70,6 +77,7 @@ If no model is available, the system still works in rules mode with tools.
 - `POST /api/upload`
 - `POST /api/ingest-url`
 - `POST /api/search`
+- `POST /api/define`
 - `POST /api/fetch`
 - `POST /api/download`
 - `GET /api/files/list?path=.`
