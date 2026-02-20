@@ -75,16 +75,17 @@ python -m backend.cli
 If Ollama is installed, you can run a local model for stronger chat quality:
 
 ```bash
-ollama pull llama3.1:8b
+ollama pull llama3.2:3b
 ```
 
 Set model via env var if needed:
 
 ```bash
-export AI_MODEL=llama3.1:8b
+export AI_MODEL=llama3.2:3b
 ```
 
 If no model is available, the system still works in rules mode with tools.
+`start_local_ai.sh` now tries to start Ollama and pull `AI_MODEL` automatically.
 
 ## API Endpoints
 

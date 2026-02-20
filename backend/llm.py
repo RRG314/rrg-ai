@@ -18,27 +18,37 @@ class OllamaClient:
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self._resolved_model = model
 
     def status(self) -> LLMStatus:
         try:
             response = requests.get(f"{self.base_url}/api/tags", timeout=5)
             response.raise_for_status()
             payload = response.json()
-            names = {item.get("name", "") for item in payload.get("models", [])}
-            if self.model in names:
-                return LLMStatus(available=True, model=self.model)
+            names = [item.get("name", "") for item in payload.get("models", []) if item.get("name")]
+            chosen = self._choose_model(names)
+            if chosen:
+                self._resolved_model = chosen
+                reason = ""
+                if chosen != self.model:
+                    reason = f"Requested model '{self.model}' not found; using '{chosen}'"
+                return LLMStatus(available=True, model=chosen, reason=reason)
             return LLMStatus(
                 available=False,
                 model=self.model,
-                reason=f"Model '{self.model}' not installed in Ollama",
+                reason=f"No local models installed in Ollama",
             )
         except Exception as exc:
             return LLMStatus(available=False, model=self.model, reason=str(exc))
 
     def chat(self, messages: list[dict[str, str]], system: str) -> str:
+        status = self.status()
+        if not status.available:
+            raise RuntimeError(status.reason or "Ollama model unavailable")
+
         merged = [{"role": "system", "content": system}, *messages]
         payload = {
-            "model": self.model,
+            "model": self._resolved_model,
             "messages": merged,
             "stream": False,
             "options": {
@@ -54,3 +64,17 @@ class OllamaClient:
         response.raise_for_status()
         data = response.json()
         return data.get("message", {}).get("content", "").strip()
+
+    def _choose_model(self, names: list[str]) -> str:
+        if not names:
+            return ""
+
+        if self.model in names:
+            return self.model
+
+        requested_base = self.model.split(":", 1)[0]
+        for name in names:
+            if name.split(":", 1)[0] == requested_base:
+                return name
+
+        return names[0]

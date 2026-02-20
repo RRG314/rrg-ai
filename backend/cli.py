@@ -15,7 +15,7 @@ def main() -> None:
     parser.add_argument("--db", default=".ai_data/ai.sqlite3")
     parser.add_argument("--downloads", default=".ai_data/downloads")
     parser.add_argument("--files-root", default=os.getenv("AI_FILES_ROOT", str(Path.home())))
-    parser.add_argument("--model", default=os.getenv("AI_MODEL", "llama3.1:8b"))
+    parser.add_argument("--model", default=os.getenv("AI_MODEL", "llama3.2:3b"))
     parser.add_argument("--ollama-url", default=os.getenv("AI_OLLAMA_URL", "http://127.0.0.1:11434"))
     args = parser.parse_args()
 

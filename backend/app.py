@@ -21,7 +21,7 @@ DATA_DIR = Path(os.getenv("AI_DATA_DIR", ROOT / ".ai_data"))
 DOWNLOADS_DIR = DATA_DIR / "downloads"
 DB_PATH = DATA_DIR / "ai.sqlite3"
 FILES_ROOT = Path(os.getenv("AI_FILES_ROOT", str(Path.home()))).expanduser().resolve()
-OLLAMA_MODEL = os.getenv("AI_MODEL", "llama3.1:8b")
+OLLAMA_MODEL = os.getenv("AI_MODEL", "llama3.2:3b")
 OLLAMA_URL = os.getenv("AI_OLLAMA_URL", "http://127.0.0.1:11434")
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
