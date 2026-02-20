@@ -11,7 +11,7 @@
       <header class="topbar">
         <div>
           <h1>RRG AI</h1>
-          <p>Static GitHub Pages AI chat with persistent browser memory.</p>
+          <p>Local-first AI chat with memory, document ingestion, web tools, and file access.</p>
         </div>
         <div class="actions">
           <button id="new-session" class="ghost">New Chat</button>
@@ -28,11 +28,25 @@
         </aside>
 
         <section class="chat-panel">
+          <section class="toolbar">
+            <div class="row">
+              <input id="backend-url" type="text" placeholder="Backend URL (blank = same origin)" />
+              <button id="connect-backend" class="ghost">Connect Backend</button>
+            </div>
+            <div class="row">
+              <input id="upload-file" type="file" />
+              <button id="upload-button" class="ghost">Upload Doc</button>
+            </div>
+            <div class="row">
+              <input id="ingest-url" type="text" placeholder="Ingest URL into document index" />
+              <button id="ingest-button" class="ghost">Ingest URL</button>
+            </div>
+          </section>
           <div id="chat-log" class="chat-log"></div>
           <form id="chat-form" class="composer">
             <textarea
               id="chat-input"
-              placeholder="Chat normally. Example: I need an end-to-end plan to optimize my AI data pipeline."
+              placeholder="Chat naturally. Example: search the web for local llm eval frameworks and compare them."
               rows="3"
             ></textarea>
             <button type="submit" id="send">Send</button>

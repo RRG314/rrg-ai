@@ -1,5 +1,5 @@
 (function () {
-  const STORAGE_KEY = "rrg_ai_store_v1";
+  const STORAGE_KEY = "rrg_ai_store_v2";
 
   const ui = {
     chatLog: document.getElementById("chat-log"),
@@ -10,6 +10,20 @@
     sessionList: document.getElementById("session-list"),
     newSession: document.getElementById("new-session"),
     clearMemory: document.getElementById("clear-memory"),
+    backendUrl: document.getElementById("backend-url"),
+    connectBackend: document.getElementById("connect-backend"),
+    uploadFile: document.getElementById("upload-file"),
+    uploadButton: document.getElementById("upload-button"),
+    ingestUrl: document.getElementById("ingest-url"),
+    ingestButton: document.getElementById("ingest-button"),
+  };
+
+  const runtime = {
+    backendOnline: false,
+    backendMode: "static-browser",
+    modelAvailable: false,
+    model: "",
+    modelReason: "",
   };
 
   const state = loadState();
@@ -18,13 +32,19 @@
     saveState();
   }
 
+  ui.backendUrl.value = state.backendUrl || "";
+
   renderAll();
+  checkBackend(false);
 
   ui.chatForm.addEventListener("submit", onSubmit);
   ui.newSession.addEventListener("click", onNewSession);
   ui.clearMemory.addEventListener("click", onClearMemory);
+  ui.connectBackend.addEventListener("click", onConnectBackend);
+  ui.uploadButton.addEventListener("click", onUpload);
+  ui.ingestButton.addEventListener("click", onIngest);
 
-  function onSubmit(event) {
+  async function onSubmit(event) {
     event.preventDefault();
     const text = ui.chatInput.value.trim();
     if (!text) return;
@@ -33,13 +53,21 @@
     appendMessage(state.currentSessionId, "user", text);
 
     ui.send.disabled = true;
-    setTimeout(() => {
-      const answer = respond(text, state.currentSessionId);
+    try {
+      let answer;
+      if (runtime.backendOnline) {
+        answer = await backendRespond(text, state.currentSessionId);
+      } else {
+        answer = staticRespond(text, state.currentSessionId);
+      }
       appendMessage(state.currentSessionId, "ai", answer);
+    } catch (err) {
+      appendMessage(state.currentSessionId, "ai", `Request failed: ${String(err)}`);
+    } finally {
       ui.send.disabled = false;
       ui.chatInput.focus();
       renderAll();
-    }, 40);
+    }
   }
 
   function onNewSession() {
@@ -59,54 +87,215 @@
     state.currentSessionId = createSession("New chat");
     saveState();
     renderAll();
-    addBubble("ai", "Local memory cleared.");
+    addBubble("ai", "Local browser memory cleared.");
   }
 
-  function respond(text, sessionId) {
+  async function onConnectBackend() {
+    state.backendUrl = (ui.backendUrl.value || "").trim();
+    saveState();
+    await checkBackend(true);
+  }
+
+  async function onUpload() {
+    if (!runtime.backendOnline) {
+      appendMessage(state.currentSessionId, "ai", "Backend offline. Start local backend first, then upload.");
+      return;
+    }
+
+    const file = ui.uploadFile.files && ui.uploadFile.files[0];
+    if (!file) {
+      appendMessage(state.currentSessionId, "ai", "Choose a file first.");
+      return;
+    }
+
+    ui.uploadButton.disabled = true;
+    try {
+      const form = new FormData();
+      form.append("file", file);
+
+      const response = await fetch(apiUrl("/api/upload"), {
+        method: "POST",
+        body: form,
+      });
+
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || `upload failed (${response.status})`);
+      }
+
+      appendMessage(
+        state.currentSessionId,
+        "ai",
+        `Uploaded and indexed: ${payload.name}\nkind: ${payload.kind}\nchars: ${payload.char_count}\ndoc_id: ${payload.doc_id}`
+      );
+      ui.uploadFile.value = "";
+    } catch (err) {
+      appendMessage(state.currentSessionId, "ai", `Upload failed: ${String(err)}`);
+    } finally {
+      ui.uploadButton.disabled = false;
+      renderAll();
+    }
+  }
+
+  async function onIngest() {
+    if (!runtime.backendOnline) {
+      appendMessage(state.currentSessionId, "ai", "Backend offline. Start local backend first, then ingest URLs.");
+      return;
+    }
+
+    const url = (ui.ingestUrl.value || "").trim();
+    if (!url) {
+      appendMessage(state.currentSessionId, "ai", "Enter a URL first.");
+      return;
+    }
+
+    ui.ingestButton.disabled = true;
+    try {
+      const response = await fetch(apiUrl("/api/ingest-url"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || `ingest failed (${response.status})`);
+      }
+
+      appendMessage(
+        state.currentSessionId,
+        "ai",
+        `Ingested URL: ${payload.url}\nkind: ${payload.kind}\nchars: ${payload.char_count}\ndoc_id: ${payload.doc_id}`
+      );
+      ui.ingestUrl.value = "";
+    } catch (err) {
+      appendMessage(state.currentSessionId, "ai", `URL ingest failed: ${String(err)}`);
+    } finally {
+      ui.ingestButton.disabled = false;
+      renderAll();
+    }
+  }
+
+  async function checkBackend(showMessage) {
+    try {
+      const response = await fetch(apiUrl("/api/health"), {
+        method: "GET",
+        cache: "no-store",
+      });
+
+      if (!response.ok) throw new Error(`health ${response.status}`);
+
+      const payload = await response.json();
+      runtime.backendOnline = Boolean(payload.ok);
+      runtime.backendMode = payload.backend || "local-python";
+      runtime.modelAvailable = Boolean(payload.model_available);
+      runtime.model = payload.model || "";
+      runtime.modelReason = payload.model_reason || "";
+
+      if (showMessage) {
+        addBubble(
+          "ai",
+          `Backend connected: ${runtime.backendMode}\nmodel: ${runtime.model || "none"}\nmodel_available: ${runtime.modelAvailable}`
+        );
+      }
+    } catch (err) {
+      runtime.backendOnline = false;
+      runtime.backendMode = "static-browser";
+      runtime.modelAvailable = false;
+      runtime.model = "";
+      runtime.modelReason = String(err);
+
+      if (showMessage) {
+        addBubble(
+          "ai",
+          "Backend not reachable. Running static browser mode only."
+        );
+      }
+    } finally {
+      renderStatus();
+    }
+  }
+
+  async function backendRespond(text, sessionId) {
     extractFacts(text, sessionId);
 
-    const lower = text.toLowerCase();
+    const response = await fetch(apiUrl("/api/chat"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: text, session_id: sessionId }),
+    });
 
-    const directMemory = answerMemoryQuestion(lower, sessionId);
-    if (directMemory) return directMemory;
-
-    const tool = inferTool(text);
-    if (tool) return tool;
-
-    const planMode = shouldPlan(lower);
-    const hits = retrieve(text, 4);
-
-    const lines = [];
-    lines.push("RRG AI response");
-
-    if (planMode) {
-      lines.push("");
-      lines.push("Plan:");
-      planFor(text).forEach((step, i) => lines.push(`${i + 1}. ${step}`));
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || `chat failed (${response.status})`);
     }
 
-    if (hits.length) {
-      lines.push("");
-      lines.push("Grounding:");
-      hits.forEach((h) => lines.push(`- ${h.title}: ${h.text.slice(0, 170)}...`));
+    if (payload.session_id && !state.sessions[payload.session_id]) {
+      state.sessions[payload.session_id] = {
+        id: payload.session_id,
+        label: "Chat",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messages: [],
+      };
     }
 
-    const facts = relevantFacts(text, sessionId, 2);
-    if (facts.length) {
-      lines.push("");
-      lines.push("Memory:");
-      facts.forEach((f) => lines.push(`- ${f.key}: ${f.value}`));
+    const lines = [payload.answer || "(empty response)"];
+
+    if (Array.isArray(payload.tool_events) && payload.tool_events.length) {
+      lines.push("Tools:");
+      payload.tool_events.forEach((event) => {
+        lines.push(`- [${event.status}] ${event.tool}: ${event.detail}`);
+      });
     }
 
-    if (!planMode && !hits.length) {
-      lines.push("");
-      lines.push("I can help with architecture, optimization, data handling, and implementation planning.");
+    if (!payload.model_available && payload.model_reason) {
+      lines.push(`Model status: ${payload.model_reason}`);
     }
 
     return lines.join("\n");
   }
 
-  function inferTool(text) {
+  function apiUrl(path) {
+    const raw = (state.backendUrl || "").trim();
+    if (!raw) return path;
+    const base = raw.endsWith("/") ? raw.slice(0, -1) : raw;
+    return `${base}${path}`;
+  }
+
+  function staticRespond(text, sessionId) {
+    extractFacts(text, sessionId);
+
+    const lower = text.toLowerCase();
+    const directMemory = answerMemoryQuestion(lower, sessionId);
+    if (directMemory) return directMemory;
+
+    const tool = inferStaticTool(text);
+    if (tool) return tool;
+
+    const hits = retrieve(text, 4);
+    const facts = relevantFacts(text, sessionId, 2);
+
+    const lines = [
+      "Running static mode. For full web/file/document tools, connect local backend.",
+      "",
+      "Response:",
+      "I can still provide planning and memory-based help from browser state.",
+    ];
+
+    if (hits.length) {
+      lines.push("", "Grounding:");
+      hits.forEach((h) => lines.push(`- ${h.title}: ${h.text.slice(0, 170)}...`));
+    }
+
+    if (facts.length) {
+      lines.push("", "Memory:");
+      facts.forEach((f) => lines.push(`- ${f.key}: ${f.value}`));
+    }
+
+    return lines.join("\n");
+  }
+
+  function inferStaticTool(text) {
     const low = text.toLowerCase().trim();
 
     const mathMatch = low.match(/(?:calculate|compute|solve|evaluate|what is)\s+([-+*/().0-9\s]{3,})$/);
@@ -127,80 +316,6 @@
       return `[repo_search]\nno matches for: ${term}`;
     }
 
-    if (
-      low.includes("index stats") ||
-      low.includes("memory stats") ||
-      low.includes("doc count") ||
-      low.includes("how many docs")
-    ) {
-      const sessions = Object.keys(state.sessions).length;
-      const factCount = Object.values(state.facts).reduce((n, arr) => n + arr.length, 0);
-      const docs = corpus().length;
-      return `[stats]\ndocs=${docs}\nsessions=${sessions}\nfacts=${factCount}`;
-    }
-
-    return "";
-  }
-
-  function shouldPlan(low) {
-    return (
-      low.includes("step by step") ||
-      low.includes("roadmap") ||
-      low.includes("full plan") ||
-      (low.includes("optimiz") && (low.includes("data") || low.includes("system") || low.includes("architecture")))
-    );
-  }
-
-  function planFor(text) {
-    const low = text.toLowerCase();
-    const steps = [];
-
-    if (low.includes("optimiz") || low.includes("latency") || low.includes("efficiency")) {
-      steps.push("Profile runtime and identify top latency bottlenecks.");
-      steps.push("Add caching for expensive retrieval and tool operations.");
-    }
-
-    if (low.includes("data") || low.includes("pipeline") || low.includes("processing")) {
-      steps.push("Improve document chunking and metadata quality for retrieval.");
-      steps.push("Add validation and regression tests for data ingestion.");
-    }
-
-    if (low.includes("model") || low.includes("agi") || low.includes("advanced")) {
-      steps.push("Swap to a stronger open-weight model and re-run eval suite.");
-      steps.push("Track grounding and hallucination metrics per release.");
-    }
-
-    if (!steps.length) steps.push("Clarify the target capability and success metrics.");
-
-    return steps.slice(0, 6);
-  }
-
-  function answerMemoryQuestion(low, sessionId) {
-    const facts = relevantFacts(low, sessionId, 6);
-    if (!facts.length) return "";
-
-    if (low.includes("my name") && low.includes("my goal")) {
-      const name = facts.find((f) => f.key === "name");
-      const goal = facts.find((f) => f.key === "goal");
-      if (name || goal) {
-        return `From memory:\n- name: ${name ? name.value : "unknown"}\n- goal: ${goal ? goal.value : "unknown"}`;
-      }
-    }
-
-    if (low.includes("my name")) {
-      const name = facts.find((f) => f.key === "name");
-      if (name) return `From memory: name: ${name.value}`;
-    }
-
-    if (low.includes("my goal")) {
-      const goal = facts.find((f) => f.key === "goal");
-      if (goal) return `From memory: goal: ${goal.value}`;
-    }
-
-    if (low.includes("remember") || low.includes("what do you know about me")) {
-      return `From memory:\n${facts.slice(0, 4).map((f) => `- ${f.key}: ${f.value}`).join("\n")}`;
-    }
-
     return "";
   }
 
@@ -208,7 +323,7 @@
     const q = tokenize(query);
     if (!q.length) return [];
 
-    const scored = corpus()
+    return corpus()
       .map((doc) => {
         const text = `${doc.title} ${doc.text} ${(doc.tags || []).join(" ")}`.toLowerCase();
         let score = 0;
@@ -221,8 +336,6 @@
       .sort((a, b) => b.score - a.score)
       .slice(0, topK)
       .map((x) => x.doc);
-
-    return scored;
   }
 
   function searchCorpus(term, topK) {
@@ -285,6 +398,27 @@
     if (pushes.length) saveState();
   }
 
+  function answerMemoryQuestion(low, sessionId) {
+    const facts = relevantFacts(low, sessionId, 6);
+    if (!facts.length) return "";
+
+    if (low.includes("my name")) {
+      const name = facts.find((f) => f.key === "name");
+      if (name) return `From memory: name: ${name.value}`;
+    }
+
+    if (low.includes("my goal")) {
+      const goal = facts.find((f) => f.key === "goal");
+      if (goal) return `From memory: goal: ${goal.value}`;
+    }
+
+    if (low.includes("remember") || low.includes("what do you know about me")) {
+      return `From memory:\n${facts.slice(0, 4).map((f) => `- ${f.key}: ${f.value}`).join("\n")}`;
+    }
+
+    return "";
+  }
+
   function relevantFacts(query, sessionId, limit) {
     const tokens = tokenize(query);
     const own = state.facts[sessionId] || [];
@@ -297,7 +431,7 @@
         if (!byKey.has(f.key)) byKey.set(f.key, f);
       });
 
-    const ranked = [...byKey.values()]
+    return [...byKey.values()]
       .map((f) => {
         const text = `${f.key} ${f.value}`.toLowerCase();
         const overlap = tokens.reduce((n, t) => n + (text.includes(t) ? 1 : 0), 0);
@@ -306,8 +440,6 @@
       .filter((f) => f.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);
-
-    return ranked;
   }
 
   function tokenize(text) {
@@ -335,13 +467,15 @@
   }
 
   function appendMessage(sessionId, role, content) {
-    const session = state.sessions[sessionId] || (state.sessions[sessionId] = {
-      id: sessionId,
-      label: "Chat",
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      messages: [],
-    });
+    const session =
+      state.sessions[sessionId] ||
+      (state.sessions[sessionId] = {
+        id: sessionId,
+        label: "Chat",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messages: [],
+      });
 
     session.messages.push({ role, content, at: Date.now() });
     session.updatedAt = Date.now();
@@ -365,13 +499,19 @@
     const docs = corpus().length;
     const sessions = Object.keys(state.sessions).length;
     const facts = Object.values(state.facts).reduce((n, arr) => n + arr.length, 0);
-    ui.status.textContent = `mode: static-browser | docs: ${docs} | sessions: ${sessions} | facts: ${facts}`;
+
+    const backend = runtime.backendOnline ? "online" : "offline";
+    const model = runtime.modelAvailable ? runtime.model : "none";
+
+    ui.status.textContent =
+      `mode: ${runtime.backendMode} (${backend}) | model: ${model} | ` +
+      `docs(static): ${docs} | sessions: ${sessions} | facts: ${facts}`;
   }
 
   function renderSessions() {
     const items = Object.values(state.sessions)
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
-      .slice(0, 50);
+      .slice(0, 80);
 
     ui.sessionList.innerHTML = "";
 
@@ -393,7 +533,7 @@
     ui.chatLog.innerHTML = "";
     const session = state.sessions[state.currentSessionId];
     if (!session || !session.messages.length) {
-      addBubble("ai", "Ready. Chat naturally. I keep local memory in your browser.");
+      addBubble("ai", "Ready. Chat naturally. Connect backend for full local AI tools.");
       return;
     }
 
@@ -429,15 +569,16 @@
   function loadState() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return { sessions: {}, facts: {}, currentSessionId: "" };
+      if (!raw) return { sessions: {}, facts: {}, currentSessionId: "", backendUrl: "" };
       const parsed = JSON.parse(raw);
       return {
         sessions: parsed.sessions || {},
         facts: parsed.facts || {},
         currentSessionId: parsed.currentSessionId || "",
+        backendUrl: parsed.backendUrl || "",
       };
     } catch {
-      return { sessions: {}, facts: {}, currentSessionId: "" };
+      return { sessions: {}, facts: {}, currentSessionId: "", backendUrl: "" };
     }
   }
 })();
