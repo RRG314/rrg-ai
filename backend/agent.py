@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import operator
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -528,6 +530,29 @@ class LocalAgent:
                     )
 
         if cfg.allow_code:
+            math_expr = _extract_math_expression(user_text)
+            if math_expr:
+                actions.append(
+                    AgentAction(
+                        tool="math.eval",
+                        title=f"Evaluate expression: {math_expr[:64]}",
+                        args={"expression": math_expr},
+                    )
+                )
+
+        if cfg.allow_code:
+            code_gen = _extract_code_generation_target(user_text)
+            if code_gen:
+                target_path = str(code_gen.get("path") or "").strip()
+                actions.append(
+                    AgentAction(
+                        tool="code.generate",
+                        title=f"Generate code{' in ' + target_path if target_path else ''}",
+                        args={"request": str(code_gen.get("instructions") or user_text), "path": target_path},
+                        retryable=False,
+                    )
+                )
+
             run_cmd = _extract_run_command(user_text)
             if run_cmd:
                 actions.append(
@@ -547,18 +572,6 @@ class LocalAgent:
                         title=f"Run tests in {_extract_optional_cwd(user_text)}",
                         args={"cwd": _extract_optional_cwd(user_text), "runner": "auto"},
                         retryable=True,
-                    )
-                )
-
-            code_gen = _extract_code_generation_target(user_text)
-            if code_gen:
-                target_path = str(code_gen.get("path") or "").strip()
-                actions.append(
-                    AgentAction(
-                        tool="code.generate",
-                        title=f"Generate code{' in ' + target_path if target_path else ''}",
-                        args={"request": str(code_gen.get("instructions") or user_text), "path": target_path},
-                        retryable=False,
                     )
                 )
 
@@ -957,6 +970,38 @@ class LocalAgent:
                 "status": "ok",
                 "detail": f"Retrieved {len(hits)} indexed document chunks",
                 "context_block": "Relevant indexed documents:\n" + "\n".join(rows) if rows else "",
+                "provenance": prov,
+            }
+
+        if tool == "math.eval":
+            expr = str(action.args.get("expression") or "").strip()
+            if not expr:
+                return {
+                    "status": "error",
+                    "detail": "Missing expression for math.eval",
+                    "context_block": "",
+                    "provenance": [],
+                }
+            value = _safe_eval_expression(expr)
+            rendered = f"Math evaluation:\nexpression: {expr}\nresult: {value}"
+            doc_id = self.store.add_document(
+                name=f"math:{expr[:64]}",
+                source="local-math-eval",
+                kind="math-eval",
+                text=rendered,
+            )
+            prov = [
+                _provenance_item(
+                    source_type="calc",
+                    source="local-math-eval",
+                    snippet=f"{expr} = {value}",
+                    doc_id=doc_id,
+                )
+            ]
+            return {
+                "status": "ok",
+                "detail": f"Evaluated expression '{expr}' = {value}",
+                "context_block": rendered,
                 "provenance": prov,
             }
 
@@ -1775,14 +1820,19 @@ def _looks_like_test_request(text: str) -> bool:
 
 
 def _extract_run_command(text: str) -> str:
-    m = re.search(r"\b(?:run|execute)\s+command\s+(.+)$", text, re.IGNORECASE)
+    m = re.search(r"\b(?:run|execute)\s+command\s+(.+)$", text, re.IGNORECASE | re.DOTALL)
     if m:
-        return m.group(1).strip().strip("`")
+        raw = m.group(1).strip().strip("`")
+        raw = re.split(r"\s+and\s+then\s+", raw, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+        raw = re.sub(r"\s+(?:in|at)\s+[~./A-Za-z0-9_\-][^\n]*$", "", raw, flags=re.IGNORECASE).strip()
+        return raw
 
     low = text.strip().lower()
     for prefix in ("pytest", "npm test", "go test", "cargo test", "python ", "python3 ", "node "):
         if low.startswith(prefix):
-            return text.strip().strip("`")
+            raw = text.strip().strip("`")
+            raw = re.sub(r"\s+(?:in|at)\s+[~./A-Za-z0-9_\-][^\n]*$", "", raw, flags=re.IGNORECASE).strip()
+            return raw
     return ""
 
 
@@ -1813,6 +1863,24 @@ def _extract_code_generation_target(text: str) -> dict[str, str]:
     if any(token in low for token in ["write code", "generate code", "implement this", "code this"]):
         return {"path": "", "instructions": text.strip()}
     return {}
+
+
+def _extract_math_expression(text: str) -> str:
+    patterns = [
+        r"\b(?:calculate|compute|evaluate|solve)\s+([0-9\.\+\-\*\/\(\)\s\^%]{2,120})$",
+        r"\bwhat is\s+([0-9\.\+\-\*\/\(\)\s\^%]{2,120})\??$",
+    ]
+    stripped = text.strip()
+    for pattern in patterns:
+        m = re.search(pattern, stripped, re.IGNORECASE)
+        if not m:
+            continue
+        expr = m.group(1).strip()
+        expr = expr.replace("^", "**")
+        expr = re.sub(r"\s+", " ", expr)
+        if re.fullmatch(r"[0-9\.\+\-\*\/\(\)\s%]{2,160}|[0-9\.\+\-\*\/\(\)\s%]{1,160}\*\*[0-9\.\+\-\*\/\(\)\s%]{1,160}", expr):
+            return expr
+    return ""
 
 
 def _extract_citations(provenance: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -1867,6 +1935,56 @@ def _strip_code_fences(text: str) -> str:
 
 def _template_code_for_request(request: str, path: str) -> str:
     suffix = Path(path).suffix.lower()
+    lowered = request.lower()
+
+    fn_match = re.search(
+        r"\bfunction\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*(?:that\s+)?(?:returns?|->)\s+([^.\n]+)",
+        request,
+        re.IGNORECASE,
+    )
+    if suffix == ".py" and fn_match:
+        name = fn_match.group(1).strip()
+        args = ", ".join(a.strip() for a in fn_match.group(2).split(",") if a.strip()) or "*args"
+        body = fn_match.group(3).strip()
+        body_expr = _normalize_python_expr(body)
+        return (
+            f"def {name}({args}):\n"
+            f'    """Auto-generated from request."""\n'
+            f"    return {body_expr}\n"
+        )
+
+    if suffix == ".py" and "factorial" in lowered:
+        return (
+            "def fact(n: int) -> int:\n"
+            '    """Iterative factorial."""\n'
+            "    if n < 0:\n"
+            "        raise ValueError('n must be >= 0')\n"
+            "    out = 1\n"
+            "    for i in range(2, n + 1):\n"
+            "        out *= i\n"
+            "    return out\n"
+        )
+
+    if suffix == ".py" and "fibonacci" in lowered:
+        return (
+            "def fib(n: int) -> int:\n"
+            '    """Iterative fibonacci where fib(0)=0, fib(1)=1."""\n'
+            "    if n < 0:\n"
+            "        raise ValueError('n must be >= 0')\n"
+            "    a, b = 0, 1\n"
+            "    for _ in range(n):\n"
+            "        a, b = b, a + b\n"
+            "    return a\n"
+        )
+
+    if suffix == ".py" and "palindrome" in lowered:
+        return (
+            "def is_pal(s: str) -> bool:\n"
+            '    """Return True when s is a palindrome."""\n'
+            "    t = ''.join(ch.lower() for ch in s if ch.isalnum())\n"
+            "    return t == t[::-1]\n"
+        )
+
     if suffix == ".py":
         return (
             'def main() -> None:\n'
@@ -1899,6 +2017,17 @@ def _template_code_for_request(request: str, path: str) -> str:
     )
 
 
+def _normalize_python_expr(expr: str) -> str:
+    cleaned = expr.strip()
+    cleaned = re.sub(r"\btrue\b", "True", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bfalse\b", "False", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"[^A-Za-z0-9_+\-*/%()., <>=!:\[\]'\"|&]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return "None"
+    return cleaned
+
+
 def _render_command_result(result: object) -> str:
     command = getattr(result, "command", [])
     cwd = getattr(result, "cwd", "")
@@ -1928,6 +2057,48 @@ def _render_command_result(result: object) -> str:
         lines.append("")
         lines.append("Output truncated for safety.")
     return "\n".join(lines)
+
+
+def _safe_eval_expression(expr: str) -> float:
+    allowed_binary = {
+        ast.Add: operator.add,
+        ast.Sub: operator.sub,
+        ast.Mult: operator.mul,
+        ast.Div: operator.truediv,
+        ast.Mod: operator.mod,
+        ast.Pow: operator.pow,
+    }
+    allowed_unary = {
+        ast.UAdd: operator.pos,
+        ast.USub: operator.neg,
+    }
+
+    tree = ast.parse(expr, mode="eval")
+
+    def _eval(node: ast.AST) -> float:
+        if isinstance(node, ast.Expression):
+            return _eval(node.body)
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, (int, float)):
+                return float(node.value)
+            raise ValueError("Only numeric constants are allowed")
+        if isinstance(node, ast.UnaryOp) and type(node.op) in allowed_unary:
+            return float(allowed_unary[type(node.op)](_eval(node.operand)))
+        if isinstance(node, ast.BinOp) and type(node.op) in allowed_binary:
+            left = _eval(node.left)
+            right = _eval(node.right)
+            if isinstance(node.op, ast.Div) and right == 0:
+                raise ValueError("Division by zero")
+            return float(allowed_binary[type(node.op)](left, right))
+        raise ValueError("Unsupported math expression")
+
+    value = _eval(tree)
+    if abs(value) > 1e12:
+        raise ValueError("Result too large")
+    rounded = round(value, 10)
+    if abs(rounded - int(rounded)) < 1e-10:
+        return float(int(rounded))
+    return rounded
 
 
 def _clamp(value: float, low: float, high: float) -> float:

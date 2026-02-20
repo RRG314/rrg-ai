@@ -89,6 +89,7 @@ def detect_test_command(cwd: Path, runner: str = "auto") -> list[str]:
 def _normalize_command(command: str | list[str]) -> list[str]:
     if isinstance(command, str):
         parts = shlex.split(command.strip())
+        parts = _coalesce_existing_paths(parts)
     else:
         parts = [str(p).strip() for p in command if str(p).strip()]
     if not parts:
@@ -115,3 +116,22 @@ def _truncate_outputs(stdout: str, stderr: str, max_output_chars: int) -> tuple[
     clipped_stdout = stdout[:half]
     clipped_stderr = stderr[:half]
     return clipped_stdout, clipped_stderr, True
+
+
+def _coalesce_existing_paths(parts: list[str]) -> list[str]:
+    if len(parts) < 2:
+        return parts
+    out: list[str] = []
+    idx = 0
+    while idx < len(parts):
+        best_end = idx
+        best_value = parts[idx]
+        candidate = parts[idx]
+        for j in range(idx + 1, len(parts)):
+            candidate = candidate + " " + parts[j]
+            if Path(candidate).exists():
+                best_end = j
+                best_value = candidate
+        out.append(best_value)
+        idx = best_end + 1
+    return out

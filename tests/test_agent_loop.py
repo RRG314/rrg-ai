@@ -141,3 +141,31 @@ def test_agent_adaptive_update_persists_rule_and_heuristics(tmp_path: Path) -> N
     assert rules
     heuristics = store.get_planning_heuristics()
     assert "planner_confidence" in heuristics
+
+
+def test_agent_math_eval_tool(tmp_path: Path) -> None:
+    db = tmp_path / "ai.sqlite3"
+    root = tmp_path / "files"
+    root.mkdir(parents=True, exist_ok=True)
+
+    store = SQLiteStore(db)
+    files = FileBrowser(root)
+    agent = LocalAgent(store=store, files=files, llm=_FakeLLM(), downloads_dir=tmp_path / "downloads")
+
+    cfg = AgentRunConfig(
+        strict_facts=False,
+        evidence_mode=False,
+        prefer_local_core=True,
+        allow_web=False,
+        allow_files=False,
+        allow_docs=False,
+        allow_code=True,
+        max_steps=8,
+    )
+
+    res = agent.run_agent(None, "calculate (19 * 19) - 7", config=cfg)
+    tool_calls = res.get("tool_calls") or []
+    assert any((c.get("name") == "math.eval" and c.get("status") == "ok") for c in tool_calls if isinstance(c, dict))
+    prov = res.get("provenance") or []
+    joined = " ".join(str(p.get("snippet") or "") for p in prov if isinstance(p, dict))
+    assert "354" in joined

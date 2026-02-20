@@ -10,6 +10,7 @@ Local-first modular AI system with an HTML chat UI plus a Python backend for:
 - Image OCR + image analysis prompt flow (PNG/JPG/WebP/TIFF/etc.)
 - Local file browsing, reading, and text search
 - Local code command execution and test running (allowlisted commands)
+- Local math expression evaluation (`calculate ...`, `compute ...`) via planner tool
 - Optional local LLM via Ollama (no cloud dependency required)
 - Recursive-Adic retrieval ranking (depth-Laplace weighted chunk scoring)
 - Planner/executor agent loop with task state, trace logs, and provenance
@@ -219,6 +220,19 @@ Code tools the planner can call:
 - `code.generate`
 - `code.run`
 - `code.test`
+- `math.eval`
+
+## Industry Benchmark (Local)
+
+Run an industry-aligned local suite (MMLU-style, GSM8K-style, HumanEval-lite, ToolBench-style):
+
+```bash
+cd /Users/stevenreid/Documents/New\ project/repo_audit/rrg314/ai
+source .venv/bin/activate
+python -m backend.industry_bench --max-steps 8
+```
+
+Report is written to `.ai_data/evals/industry_bench_<timestamp>.json`.
 
 Evidence mode behavior:
 - Every returned claim must include a source and snippet from stored provenance.
