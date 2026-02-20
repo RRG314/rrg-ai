@@ -1,60 +1,59 @@
 # RRG AI
 
-Local-first modular AI system with an HTML chat UI plus a Python backend for:
+Local-first modular AI platform with an HTML chat UI and a Python backend.
 
-- Natural chat with persistent session memory
-- Internet search and website content extraction
-- URL downloading to local disk
-- Dictionary definitions from a live source (`dictionaryapi.dev`)
-- Document upload/indexing (TXT/MD/PDF/DOCX)
-- Image OCR + image analysis prompt flow (PNG/JPG/WebP/TIFF/etc.)
-- Local file browsing, reading, and text search
-- Local code command execution and test running (allowlisted commands)
-- Local math expression evaluation (`calculate ...`, `compute ...`) via planner tool
-- Optional local LLM via Ollama (no cloud dependency required)
-- Recursive-Adic retrieval ranking (depth-Laplace weighted chunk scoring)
-- Planner/executor agent loop with task state, trace logs, and provenance
-- Evidence mode outputs (`claim -> sources -> snippets -> confidence`)
-- Callable local skills: `research_pipeline`, `doc_pipeline`, `folder_audit_pipeline`
-- Structured memory tables: `facts`, `preferences`, `outcomes`, `artifacts`
-- Adaptive planner loop: post-task success/failure analysis, heuristic updates, and stored improvement rules
+The project is designed for private local use first: chat, retrieval, tools, evidence/provenance, adaptive planning, and benchmark/eval harnesses all run without cloud APIs.
 
-## Modes
+## Highlights
 
-1. Static browser mode (GitHub Pages):
-- Works with no backend
-- Keeps browser memory and built-in corpus retrieval
-- No direct internet/file/upload tools
+- Chat UI with session persistence and agent traces
+- Planner/executor agent loop (`/api/agent`) with retries, task state, and provenance
+- Strict Fact Mode and Evidence Mode (`claim -> sources -> snippets -> confidence`)
+- Local tools for web, files, documents, OCR, code execution/testing, and math
+- Structured memory (`facts`, `preferences`, `outcomes`, `artifacts`)
+- Adaptive post-task reflection and planning heuristic updates
+- Recursive-Adic retrieval scoring integrated in storage ranking
+- Local evaluation suites (`eval`, `industry_bench`, `system_check`)
+- Benchmark run isolation by default (fresh DB/data per run)
 
-2. Local full mode (recommended):
-- Run the Python backend locally
-- UI can use all tools + persistent SQLite memory
-- Optional Ollama model for higher quality chat
+## Architecture (At A Glance)
+
+- Frontend: `index.html`, `app.js`, `style.css`
+- API: `backend/app.py` (FastAPI)
+- Agent: `backend/agent.py`
+- Storage: `backend/storage.py` (SQLite)
+- Skills: `backend/skills.py`
+- Recursive learning: `backend/recursive_learning.py`
+- Bench/eval: `backend/eval.py`, `backend/industry_bench.py`, `backend/system_check.py`
+- Tools: `backend/tools/`
+
+See full docs map in [`docs/README.md`](docs/README.md).
 
 ## Quick Start (Local Full Mode)
 
-Fastest path (no manual backend URL entry):
+### 1) Start everything
 
 ```bash
-cd /Users/stevenreid/Documents/New\ project/repo_audit/rrg314/ai
 ./start_local_ai.sh
 ```
 
-macOS double-click launcher: `start_local_ai.command`
+This script will:
+- create `.venv` if needed
+- install dependencies
+- start backend on a free localhost port (default near `8000`)
+- attempt to start/use Ollama locally (optional)
+- open the UI automatically
 
-No-code path:
-1. Double-click `start_local_ai.command`
-2. Wait for the browser to open
-3. Click `Auto Connect`
-4. Start chatting
+### 2) Open the UI
 
-After it starts:
-1. Open the URL it prints.
-2. Click `Auto Connect`.
-3. Chat normally.
-4. For image OCR, install Tesseract once: `brew install tesseract`
+Use the URL shown by the script (usually `http://127.0.0.1:8000`).
 
-Or run manually:
+### 3) Chat
+
+- Click `Auto Connect` if needed
+- Keep `Run as Agent`, `Strict Fact Mode`, and `Evidence Mode` enabled for grounded outputs
+
+## Manual Start
 
 ```bash
 python3 -m venv .venv
@@ -63,191 +62,133 @@ pip install -r requirements.txt
 uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-Open [http://127.0.0.1:8000](http://127.0.0.1:8000). The UI is served by the backend itself and connects automatically.
-If port `8000` is busy, `start_local_ai.sh` automatically chooses the next free port.
-
-If you still want a separate static frontend server, you can use one, and the UI will auto-detect the backend (`same origin`, `127.0.0.1:8000`, `localhost:8000`).
-You only need `Connect Backend` if you want to override URL manually.
-
-Strict Fact Mode is enabled by default in the UI.
-Run as Agent and Evidence Mode are enabled by default in the UI.
-Recursive-Adic retrieval ranking is enabled by default (`AI_RECURSIVE_ADIC_RANKING=1`).
-
-Simple example prompts:
-- `define entropy`
-- `what does theorem mean`
-- `search the web for latest retrieval benchmarks`
-- `read file /Users/stevenreid/Documents/paper.txt`
-- `read website https://example.com`
-
 ## Terminal Chat
 
 ```bash
-cd /Users/stevenreid/Documents/New\ project/repo_audit/rrg314/ai
 source .venv/bin/activate
 python -m backend.cli
 ```
 
-## Optional: Local Model (Ollama)
-
-If Ollama is installed, you can run a local model for stronger chat quality:
+## Optional Local Model (Ollama)
 
 ```bash
 ollama pull llama3.2:3b
-```
-
-Set model via env var if needed:
-
-```bash
 export AI_MODEL=llama3.2:3b
 ```
 
-If no model is available, the system still works in rules mode with tools.
-`start_local_ai.sh` now tries to start Ollama and pull `AI_MODEL` automatically.
+If no Ollama model is available, the system still works in local rules/tools mode.
 
-## API Endpoints
+## Core Endpoints
 
 - `GET /api/health`
 - `POST /api/chat`
-- `POST /api/agent` (multi-step planner/executor)
+- `POST /api/agent`
 - `POST /api/upload`
-- `POST /api/ingest-url`
-- `POST /api/image/analyze` (multipart: `file`, optional `prompt`, optional `session_id`)
+- `POST /api/image/analyze`
 - `POST /api/search`
-- `POST /api/define`
 - `POST /api/fetch`
 - `POST /api/download`
-- `GET /api/files/list?path=.`
 - `POST /api/files/read`
-- `POST /api/files/search`
 - `POST /api/code/run`
 - `POST /api/code/test`
+- `POST /api/system-check`
 - `GET /api/sessions`
 - `GET /api/tasks`
-- `GET /api/tasks/{task_id}`
-- `GET /api/memory?session_id=<id>`
-- `GET /api/docs`
+- `GET /api/memory`
 
-## Data Location
+Full request/response reference: [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md).
 
-By default, backend data is stored in:
+## Security Defaults
 
-- `.ai_data/ai.sqlite3` (chat memory + document index)
-- `.ai_data/downloads/` (downloaded files)
-- `.ai_data/evals/` (eval reports)
+- Local bind by default (`127.0.0.1`)
+- Token auth enabled by default (`AI_REQUIRE_TOKEN=1`)
+- CORS default is localhost-only
+- Pairing gate for non-local origins in `/api/bootstrap`
+- File access rooted to repo by default (`AI_FILES_ROOT`)
+- Web fetch/download block private/loopback targets by default
 
-`tasks` are persisted in SQLite with:
-- `task_id`, `session_id`, `title`, `status`
-- `created_at`, `updated_at`
-- `steps_json`, `outputs_json`, `provenance_json`
+Security details and hardening guide: [`docs/SECURITY.md`](docs/SECURITY.md).
 
-Structured memory tables:
-- `facts` (`key`, `value`, `source`, timestamps)
-- `preferences` (`key`, `value`, `source`, timestamps)
-- `outcomes` (`title`, `summary`, `status`, `score`)
-- `artifacts` (`artifact_type`, `location`, `source`, `doc_id`, `description`)
-- `planning_heuristics` (`key`, `value`, `source`, `updated_at`)
-- `improvement_rules` (`session_id`, `task_id`, `rule`, `trigger`, `confidence`)
+## Data Layout
 
-Configurable via env vars:
+Default base dir: `.ai_data/`
 
-- `AI_DATA_DIR`
-- `AI_FILES_ROOT`
-- `AI_MODEL`
-- `AI_OLLAMA_URL`
-- `AI_RECURSIVE_ADIC_RANKING` (`1`/`0`)
-- `AI_RADF_ALPHA` (default `1.5`)
-- `AI_RADF_BETA` (default `0.35`)
-- `AI_REQUIRE_TOKEN` (`1` default, recommended)
-- `AI_ALLOWED_ORIGIN_REGEX` (CORS allowlist regex)
+- Main DB: `.ai_data/ai.sqlite3`
+- Downloads: `.ai_data/downloads/`
+- Eval reports: `.ai_data/evals/`
+- Isolated eval run data: `.ai_data/evals/runs/<run_id>/`
 
-## GitHub Pages
+## Benchmarks and Evaluation
 
-GitHub Pages can host the HTML UI, but full local tooling needs a Python backend.
-Static pages alone cannot securely provide unrestricted file-system and document-processing capabilities.
+All benchmark/eval harnesses are isolated by default.
 
-## Privacy and Security (Important)
-
-- Your private data (`.ai_data`, uploaded docs, chat memory, evals) stays on your local machine and is not pushed to GitHub Pages.
-- Backend runs on `127.0.0.1` by default (local-only binding).
-- API token auth is enabled by default (`AI_REQUIRE_TOKEN=1`):
-  - token is auto-generated locally in `.ai_data/api_token.txt`
-  - frontend fetches it automatically from `/api/bootstrap`
-  - no manual token copy is required
-- CORS is restricted by regex (not `*`) so random websites cannot read your backend responses.
-- The UI now only auto-connects to local backends (`localhost` / `127.0.0.1`).
-
-If someone else uses the same GitHub Pages UI, they use their own local backend/data, not yours.
-
-## Recursive-Adic Integration
-
-The backend now uses a Recursive-Adic depth proxy in retrieval scoring:
-
-- Recursive depth (RDT recurrence): `R(1)=0`, `R(n)=1+min_{1<=k<n}((R(k)+R(n-k))/alpha)`.
-- Depth-Laplace weighting: `w(n)=exp(-beta*R(n))`, clamped to a minimum for stability.
-- Final chunk score: `base_lexical_score * w(rank_index)`.
-
-This means retrieved context is not only keyword-matched but also depth-weighted, giving you a concrete, active integration of the Recursive-Adic framework into chat grounding.
-
-Further design/novelty notes:
-- `docs/recursive_adic_novelty_review.md`
-- `docs/recursive_adic_ai_systems.md`
-
-## Agent API Trace Shape
-
-`POST /api/agent` returns:
-- `answer`
-- `plan` (step list + status)
-- `tool_calls` (`name`, `args`, `attempt`, `status`, `result_summary`)
-- `citations`
-- `provenance` (urls/files/doc ids + snippets)
-- `evidence` objects in Evidence Mode
-- `memory` (facts/preferences/outcomes/artifacts snapshot)
-- `adaptive_update` (task success analysis + learned heuristic deltas + improvement rule id)
-
-Core flags:
-- `strict_fact_mode` / `strict_facts`
-- `evidence_mode`
-- `allow_web`, `allow_files`, `allow_docs`, `allow_code`, `allow_downloads`
-- `max_steps`
-
-Skill tools the planner can call:
-- `skill.research_pipeline`
-- `skill.doc_pipeline`
-- `skill.folder_audit_pipeline`
-
-Code tools the planner can call:
-- `code.generate`
-- `code.run`
-- `code.test`
-- `math.eval`
-
-## Industry Benchmark (Local)
-
-Run an industry-aligned local suite (MMLU-style, GSM8K-style, HumanEval-lite, ToolBench-style):
+### Industry benchmark
 
 ```bash
-cd /Users/stevenreid/Documents/New\ project/repo_audit/rrg314/ai
-source .venv/bin/activate
 python -m backend.industry_bench --max-steps 8
 ```
 
-Report is written to `.ai_data/evals/industry_bench_<timestamp>.json`.
-
-Evidence mode behavior:
-- Every returned claim must include a source and snippet from stored provenance.
-- If no grounded source+snippet is available, no factual claim is emitted.
-- By default `prefer_local_core=true`, so planner answers use local pipelines/original systems first and do not depend on Ollama output.
-
-## Eval Harness
-
-Run:
+### System check (95% gate)
 
 ```bash
-cd /Users/stevenreid/Documents/New\ project/repo_audit/rrg314/ai
-source .venv/bin/activate
+python -m backend.system_check --min-score 95 --fail-below
+```
+
+### Eval harness
+
+```bash
 python -m backend.eval --task-count 24
 ```
 
-This runs a 20-50 task local suite and writes JSON reports to `.ai_data/evals/`.
-Use `--task-count` (20..50) and `--use-llm` to include model-based generation.
+Reports include:
+- `run_id`
+- `db_path`
+- `data_dir`
+- `isolated`
+
+Reuse a DB for debugging (non-isolated mode):
+
+```bash
+python -m backend.industry_bench --no-isolated --persist-db --db-path .ai_data/industry_bench.sqlite3
+python -m backend.system_check --no-isolated --persist-db --db-path .ai_data/system_check.sqlite3
+python -m backend.eval --no-isolated --persist-db --db-path .ai_data/eval.sqlite3
+```
+
+More detail: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+
+## Environment Variables
+
+- `AI_DATA_DIR` (default `.ai_data`)
+- `AI_FILES_ROOT` (default repo root)
+- `AI_MODEL` (default `llama3.2:3b`)
+- `AI_OLLAMA_URL` (default `http://127.0.0.1:11434`)
+- `AI_RECURSIVE_ADIC_RANKING` (`1`/`0`)
+- `AI_RADF_ALPHA` (default `1.5`)
+- `AI_RADF_BETA` (default `0.35`)
+- `AI_REQUIRE_TOKEN` (`1`/`0`)
+- `AI_ALLOWED_ORIGIN_REGEX` (default localhost-only regex)
+- `AI_BOOTSTRAP_PAIRING_REQUIRED` (`1`/`0`)
+- `AI_REPO_COLLECTION_ROOT`
+- `AI_LEARNING_PDF_PATHS` (path-separated list)
+
+## Testing
+
+```bash
+PYTHONPATH=. pytest -q
+```
+
+## Documentation
+
+- [`docs/README.md`](docs/README.md) - documentation index
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) - component and data flow map
+- [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md) - endpoint reference
+- [`docs/OPERATIONS.md`](docs/OPERATIONS.md) - runbooks and troubleshooting
+- [`docs/SECURITY.md`](docs/SECURITY.md) - security model and hardening
+- [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) - eval/benchmark methodology
+- [`docs/RELEASE_READINESS.md`](docs/RELEASE_READINESS.md) - release checklist/status
+- [`docs/recursive_adic_novelty_review.md`](docs/recursive_adic_novelty_review.md)
+- [`docs/recursive_adic_ai_systems.md`](docs/recursive_adic_ai_systems.md)
+
+## License
+
+MIT (see `LICENSE`).

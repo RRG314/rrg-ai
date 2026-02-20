@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .llm import OllamaClient
+from .recursive_learning import RecursiveLearningLayer
 from .skills import doc_pipeline, folder_audit_pipeline, research_pipeline
 from .storage import MemoryFact, SQLiteStore
 from .tools.codeexec import detect_test_command, run_command
@@ -58,12 +59,21 @@ class LocalAgent:
         files: FileBrowser,
         llm: OllamaClient,
         downloads_dir: Path,
+        repo_collection_root: Path | None = None,
+        learning_pdf_paths: list[Path] | None = None,
     ) -> None:
         self.store = store
         self.files = files
         self.llm = llm
         self.downloads_dir = Path(downloads_dir)
         self.downloads_dir.mkdir(parents=True, exist_ok=True)
+        recursive_repo_root = repo_collection_root if repo_collection_root is not None else self.files.root
+        self.recursive_learning = RecursiveLearningLayer(
+            store=self.store,
+            files=self.files,
+            repo_root=recursive_repo_root,
+            pdf_paths=learning_pdf_paths,
+        )
 
     def chat(self, session_id: str | None, user_text: str, strict_facts: bool = False) -> dict[str, object]:
         sid = self.store.ensure_session(session_id, title=user_text[:60] or "Chat")
@@ -299,7 +309,7 @@ class LocalAgent:
         )
 
         self.store.add_message(sid, "assistant", answer)
-        adaptive_update = self._analyze_and_adapt(
+        adaptive_update = self.reflect_and_update_policy(
             session_id=sid,
             task_id=task_id,
             user_text=user_text,
@@ -311,6 +321,20 @@ class LocalAgent:
             answer=answer,
             heuristics=heuristics,
         )
+        recursive_learning_update = self.recursive_learning.adapt(
+            session_id=sid,
+            task_id=task_id,
+            user_text=user_text,
+            strict_facts=cfg.strict_facts,
+            evidence_mode=cfg.evidence_mode,
+            plan=plan,
+            tool_calls=tool_calls,
+            provenance=provenance,
+            evidence=evidence,
+            heuristics=heuristics,
+            baseline_score=float(adaptive_update.get("success_score") or 0.0),
+        )
+        adaptive_update["recursive_learning"] = recursive_learning_update
         memory_snapshot = self.store.memory_snapshot(sid, limit=120)
         skills_called = sorted(
             {
@@ -334,6 +358,7 @@ class LocalAgent:
                 "outcome_id": outcome_id,
                 "llm_used": llm_used,
                 "adaptive_update": adaptive_update,
+                "recursive_learning": recursive_learning_update,
             },
             provenance=provenance,
         )
@@ -357,11 +382,13 @@ class LocalAgent:
             "memory": memory_snapshot,
             "llm_used": llm_used,
             "adaptive_update": adaptive_update,
+            "recursive_learning": recursive_learning_update,
             "original_work_used": {
                 "recursive_adic_ranking": bool(getattr(self.store, "use_recursive_adic", False)),
                 "planner_executor": True,
                 "structured_memory": True,
                 "adaptive_planner": True,
+                "recursive_learning_layer": True,
                 "skills_called": skills_called,
                 "evidence_mode_enforced": bool(cfg.evidence_mode),
                 "prefer_local_core": bool(cfg.prefer_local_core),
@@ -369,6 +396,32 @@ class LocalAgent:
             },
             "done": True,
         }
+
+    def reflect_and_update_policy(
+        self,
+        session_id: str,
+        task_id: str,
+        user_text: str,
+        cfg: AgentRunConfig,
+        plan: list[dict[str, object]],
+        tool_calls: list[dict[str, object]],
+        provenance: list[dict[str, object]],
+        evidence: list[dict[str, object]],
+        answer: str,
+        heuristics: dict[str, float],
+    ) -> dict[str, object]:
+        return self._analyze_and_adapt(
+            session_id=session_id,
+            task_id=task_id,
+            user_text=user_text,
+            cfg=cfg,
+            plan=plan,
+            tool_calls=tool_calls,
+            provenance=provenance,
+            evidence=evidence,
+            answer=answer,
+            heuristics=heuristics,
+        )
 
     def _build_agent_actions(
         self,
@@ -398,6 +451,15 @@ class LocalAgent:
         research_requested = any(token in low for token in ["research pipeline", "run research", "literature scan"])
         doc_pipeline_requested = any(token in low for token in ["doc pipeline", "document pipeline", "evidence sweep"])
         folder_audit_requested = any(token in low for token in ["folder audit", "repo audit", "audit folder", "audit repo"])
+        recursive_learning_requested = any(
+            token in low
+            for token in [
+                "recursive learning pipeline",
+                "run recursive learning",
+                "recursive adic pipeline",
+                "radf pipeline",
+            ]
+        )
 
         if cfg.allow_web and research_requested:
             query = _extract_research_query(user_text)
@@ -406,6 +468,18 @@ class LocalAgent:
                     tool="skill.research_pipeline",
                     title=f"Run research pipeline for '{query}'",
                     args={"query": query, "max_results": 6, "fetch_top": 2},
+                    retryable=True,
+                )
+            )
+
+        if cfg.allow_docs and recursive_learning_requested:
+            query = _extract_recursive_learning_query(user_text)
+            force_bootstrap = bool(re.search(r"\b(force|rebuild|rebootstrap|refresh)\b", low))
+            actions.append(
+                AgentAction(
+                    tool="skill.recursive_learning_pipeline",
+                    title=f"Run recursive learning pipeline for '{query}'",
+                    args={"query": query, "force_bootstrap": force_bootstrap},
                     retryable=True,
                 )
             )
@@ -745,6 +819,19 @@ class LocalAgent:
                 "detail": out.detail,
                 "context_block": out.context_block,
                 "provenance": out.provenance,
+            }
+
+        if tool == "skill.recursive_learning_pipeline":
+            out = self.recursive_learning.run_pipeline(
+                session_id=session_id,
+                query=str(action.args.get("query") or user_text),
+                force_bootstrap=bool(action.args.get("force_bootstrap")),
+            )
+            return {
+                "status": str(out.get("status") or "ok"),
+                "detail": str(out.get("detail") or "Recursive learning pipeline completed"),
+                "context_block": str(out.get("context_block") or ""),
+                "provenance": list(out.get("provenance") or []),
             }
 
         if tool == "skill.folder_audit_pipeline":
@@ -1505,6 +1592,21 @@ class LocalAgent:
         if cfg.evidence_mode:
             success = success and evidence_good > 0
 
+        success_score = _clamp(
+            (0.45 * done_ratio)
+            + (0.20 if has_answer else 0.0)
+            + (0.15 * min(1.0, provenance_count / 2.0))
+            + (0.15 * min(1.0, evidence_good / 2.0))
+            + (0.05 * max(0.0, 1.0 - (0.30 * float(tool_errors)))),
+            0.0,
+            1.0,
+        )
+        if cfg.strict_facts and provenance_count <= 0:
+            success_score *= 0.65
+        if cfg.evidence_mode and evidence_good <= 0:
+            success_score *= 0.65
+        success_score = round(_clamp(success_score, 0.0, 1.0), 3)
+
         reasons: list[str] = []
         if not has_answer:
             reasons.append("empty_answer")
@@ -1604,8 +1706,139 @@ class LocalAgent:
             confidence=round(confidence, 3),
         )
 
+        task_type = _infer_task_type(user_text, tool_calls)
+        worked: list[str] = []
+        failed: list[str] = []
+        if done_ratio >= 0.75:
+            worked.append(f"Plan completion was high ({done_steps}/{max(1, total_steps)} steps).")
+        if has_answer:
+            worked.append("Produced a final answer.")
+        if provenance_count > 0:
+            worked.append(f"Grounded output with {provenance_count} provenance records.")
+        if evidence_good > 0:
+            worked.append(f"Generated {evidence_good} evidence objects with source+snippet pairs.")
+        if tool_errors == 0:
+            worked.append("Tool execution was stable (no hard failures).")
+
+        reason_texts = [_reason_label(item) for item in reasons]
+        for label in reason_texts:
+            if label not in failed:
+                failed.append(label)
+
+        if _contains_any(tool_calls, ("outside allowed root", "outside the allowed root", "outside root")):
+            message = "File access failed due to root confinement (set AI_FILES_ROOT or upload the file)."
+            if message not in failed:
+                failed.append(message)
+
+        good_tools: list[str] = []
+        bad_tools: list[str] = []
+        seen_good: set[str] = set()
+        seen_bad: set[str] = set()
+        successful_tool_names: set[str] = set()
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                continue
+            name = str(call.get("name") or "").strip()
+            if not name:
+                continue
+            status = str(call.get("status") or "").strip().lower()
+            summary = str(call.get("result_summary") or "").strip()
+            if status == "ok":
+                successful_tool_names.add(name)
+                msg = f"{name} succeeded."
+                if msg not in seen_good:
+                    seen_good.add(msg)
+                    good_tools.append(msg)
+            if status == "error":
+                compact = summary[:140] if summary else "tool error"
+                msg = f"{name} failed ({compact})."
+                if msg not in seen_bad:
+                    seen_bad.add(msg)
+                    bad_tools.append(msg)
+
+        if cfg.strict_facts and provenance_count <= 0:
+            strict_hint = (
+                "Strict fact mode had no grounded snippets; planner should collect docs/web evidence before compose."
+            )
+            if strict_hint not in failed:
+                failed.append(strict_hint)
+            if "docs.retrieve" not in successful_tool_names and "skill.doc_pipeline" not in successful_tool_names:
+                msg = "Prefer docs.retrieve/doc pipeline before raw web calls in strict fact mode."
+                if msg not in seen_bad:
+                    seen_bad.add(msg)
+                    bad_tools.append(msg)
+
+        if cfg.evidence_mode and evidence_good <= 0:
+            hint = "Evidence mode ended without usable source+snippet pairs."
+            if hint not in failed:
+                failed.append(hint)
+
+        planning_changes: list[str] = []
+        for key, change in updates.items():
+            delta = float(change.get("delta") or 0.0)
+            if key == "docs_priority":
+                if delta > 0:
+                    planning_changes.append("Increase document retrieval priority before answer composition.")
+                elif delta < 0:
+                    planning_changes.append("Decrease document retrieval priority slightly.")
+            elif key == "web_priority":
+                if delta > 0:
+                    planning_changes.append("Increase web retrieval budget for missing coverage.")
+                elif delta < 0:
+                    planning_changes.append("Reduce web priority when local docs/tools are sufficient.")
+            elif key == "retry_attempts":
+                if delta > 0:
+                    planning_changes.append("Increase tool retry attempts after failures.")
+                elif delta < 0:
+                    planning_changes.append("Lower retry attempts to improve efficiency.")
+            elif key == "planner_confidence":
+                if delta > 0:
+                    planning_changes.append("Increase planner confidence for stable workflows.")
+                elif delta < 0:
+                    planning_changes.append("Lower planner confidence and force more grounding steps.")
+
+        if cfg.strict_facts and cfg.evidence_mode and provenance_count < 2:
+            planning_changes.append("When strict facts + evidence mode are on, collect at least 2 grounded sources.")
+        if not planning_changes:
+            planning_changes.append("No planning heuristic change was needed for this task.")
+
+        good_tools = good_tools[:6]
+        bad_tools = bad_tools[:6]
+        worked = worked[:6]
+        failed = failed[:6]
+        planning_changes = planning_changes[:6]
+
+        if success:
+            next_action = "keep current routing and continue optimizing retries."
+        else:
+            next_action = "prioritize grounded retrieval and adjust tool routing before compose."
+        policy_summary = (
+            f"{task_type}: score={success_score:.3f}; success={str(success).lower()}; "
+            f"next={next_action}"
+        )
+        policy_key = f"policy.{task_type}"
+        self.store.upsert_preference(session_id, policy_key, policy_summary[:300], source="adaptive-agent")
+        self.store.upsert_fact(session_id, "last_task_type", task_type, source="adaptive-agent")
+        self.store.upsert_fact(session_id, "last_task_success", "true" if success else "false", source="adaptive-agent")
+        self.store.upsert_fact(session_id, "last_task_score", f"{success_score:.3f}", source="adaptive-agent")
+
         return {
             "task_success": bool(success),
+            "success_score": success_score,
+            "task_type": task_type,
+            "worked": worked,
+            "failed": failed,
+            "tool_routing": {
+                "good": good_tools,
+                "bad": bad_tools,
+            },
+            "planning_changes": planning_changes,
+            "policy_update": {
+                "key": policy_key,
+                "summary": policy_summary,
+                "confidence": round(confidence, 3),
+                "stored_as": "preferences",
+            },
             "failure_reasons": reasons,
             "heuristic_updates": updates,
             "improvement_rule_id": rule_id,
@@ -1797,6 +2030,19 @@ def _extract_doc_pipeline_query(text: str) -> str:
     return text.strip()
 
 
+def _extract_recursive_learning_query(text: str) -> str:
+    m = re.search(
+        r"\b(?:recursive learning pipeline|run recursive learning|recursive adic pipeline|radf pipeline)\s+(?:for|on)?\s*(.+)$",
+        text,
+        re.IGNORECASE,
+    )
+    if m:
+        q = m.group(1).strip()
+        if q:
+            return q
+    return text.strip()
+
+
 def _extract_folder_audit_path(text: str) -> str:
     m = re.search(r"\b(?:folder audit|audit folder|repo audit|audit repo)\s+(?:in|on|for)?\s*(.+)$", text, re.IGNORECASE)
     if not m:
@@ -1847,9 +2093,27 @@ def _extract_optional_cwd(text: str) -> str:
 
 
 def _extract_code_generation_target(text: str) -> dict[str, str]:
+    low = text.lower()
+    for marker in ("create file ", "write file ", "generate file "):
+        idx = low.find(marker)
+        if idx >= 0:
+            tail = text[idx + len(marker) :].strip()
+            tail_low = tail.lower()
+            split_idx = -1
+            split_token = ""
+            for token in (" with ", " for "):
+                pos = tail_low.rfind(token)
+                if pos > split_idx:
+                    split_idx = pos
+                    split_token = token
+            if split_idx > 0:
+                path = tail[:split_idx].strip().strip("`\"")
+                instructions = tail[split_idx + len(split_token) :].strip()
+                if path and instructions:
+                    return {"path": path, "instructions": instructions}
+
     patterns = [
-        r"\b(?:create|write|generate)\s+file\s+([^\s]+)\s+(?:with|for)\s+(.+)$",
-        r"\b(?:implement|write code|generate code)\s+in\s+(?:file\s+)?([^\s]+)\s*[:,-]?\s*(.+)$",
+        r"\b(?:implement|write code|generate code)\s+in\s+(?:file\s+)?(.+?)\s*[:,-]?\s*(.+)$",
     ]
     for pattern in patterns:
         m = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
@@ -2299,3 +2563,56 @@ def _claim_from_snippet(snippet: str, max_chars: int = 180) -> str:
     if not re.search(r"[A-Za-z]", sentence):
         sentence = f"Source excerpt: {text[:max_chars]}"
     return sentence[:max_chars]
+
+
+def _infer_task_type(user_text: str, tool_calls: list[dict[str, object]]) -> str:
+    low = user_text.lower()
+    names = {
+        str(call.get("name") or "").strip()
+        for call in tool_calls
+        if isinstance(call, dict) and str(call.get("name") or "").strip()
+    }
+
+    if any(name.startswith("skill.research_pipeline") for name in names) or any(
+        token in low for token in ("research", "literature", "benchmarks", "survey")
+    ):
+        return "research"
+    if any(name.startswith("skill.recursive_learning_pipeline") for name in names) or any(
+        token in low for token in ("recursive learning", "recursive adic", "radf pipeline")
+    ):
+        return "recursive_learning"
+    if any(name.startswith("skill.doc_pipeline") or name.startswith("docs.") for name in names) or any(
+        token in low for token in ("document", "paper", "pdf", "evidence sweep")
+    ):
+        return "doc_pipeline"
+    if any(name.startswith("skill.folder_audit_pipeline") for name in names) or any(
+        token in low for token in ("folder audit", "repo audit", "audit folder", "audit repo")
+    ):
+        return "folder_audit"
+    if any(name.startswith("code.") or name == "math.eval" for name in names) or any(
+        token in low for token in ("code", "test", "command", "compile", "debug")
+    ):
+        return "code"
+    return "general_chat"
+
+
+def _reason_label(reason: str) -> str:
+    mapping = {
+        "empty_answer": "No answer was generated.",
+        "no_grounded_provenance": "No grounded provenance was captured.",
+        "no_evidence_pairs": "Evidence objects were missing source/snippet pairs.",
+        "tool_failures": "One or more tool calls failed.",
+        "low_plan_completion": "Less than half of planned steps completed.",
+    }
+    return mapping.get(reason, reason)
+
+
+def _contains_any(tool_calls: list[dict[str, object]], needles: tuple[str, ...]) -> bool:
+    lowered_needles = tuple(x.lower() for x in needles)
+    for call in tool_calls:
+        if not isinstance(call, dict):
+            continue
+        text = str(call.get("result_summary") or "").lower()
+        if any(needle in text for needle in lowered_needles):
+            return True
+    return False

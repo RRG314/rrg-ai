@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .agent import AgentRunConfig, LocalAgent
 from .llm import LLMStatus, OllamaClient
+from .run_isolation import resolve_bench_paths
 from .storage import SQLiteStore
 from .tools.filesystem import FileBrowser
 
@@ -50,6 +51,19 @@ def _seed_workspace(store: SQLiteStore, files_root: Path) -> Path:
         "Recursive-Adic retrieval uses depth-Laplace weighting and recursive depth transforms for ranking.",
         encoding="utf-8",
     )
+    (notes / "facts.txt").write_text(
+        (
+            "Mars is called the Red Planet.\n"
+            "The capital city of Japan is Tokyo.\n"
+            "The Pacific Ocean is the largest ocean on Earth.\n"
+            "The primary language spoken in Brazil is Portuguese.\n"
+            "At sea level, water boils at 100 degrees Celsius.\n"
+            "Plants absorb carbon dioxide during photosynthesis.\n"
+            "H2O is commonly known as water.\n"
+            "A normal human heart has four chambers: two atria and two ventricles.\n"
+        ),
+        encoding="utf-8",
+    )
     (tests / "test_smoke.py").write_text(
         "def test_smoke():\n"
         "    assert (2 + 3) == 5\n",
@@ -68,6 +82,12 @@ def _seed_workspace(store: SQLiteStore, files_root: Path) -> Path:
         kind="text",
         text=(notes / "radf.txt").read_text(encoding="utf-8"),
     )
+    store.add_document(
+        name="industry-seed:facts",
+        source=str(notes / "facts.txt"),
+        kind="text",
+        text=(notes / "facts.txt").read_text(encoding="utf-8"),
+    )
     return ws
 
 
@@ -78,7 +98,7 @@ def _build_tasks(workspace: Path, max_steps: int, prefer_local_core: bool) -> li
         prefer_local_core=prefer_local_core,
         allow_web=True,
         allow_files=False,
-        allow_docs=False,
+        allow_docs=True,
         allow_code=False,
         max_steps=max_steps,
     )
@@ -276,7 +296,7 @@ def _check_task(result: dict[str, object], check: dict[str, object]) -> tuple[bo
     return False, f"unknown check type: {check_type}"
 
 
-def _score_task(result: dict[str, object], core_pass: bool) -> tuple[float, dict[str, object]]:
+def _score_task(result: dict[str, object], task: IndustryTask, core_pass: bool) -> tuple[float, dict[str, object]]:
     tool_calls = [c for c in (result.get("tool_calls") or []) if isinstance(c, dict)]
     provenance = [p for p in (result.get("provenance") or []) if isinstance(p, dict)]
     evidence = [e for e in (result.get("evidence") or []) if isinstance(e, dict)]
@@ -291,11 +311,16 @@ def _score_task(result: dict[str, object], core_pass: bool) -> tuple[float, dict
                 complete += 1
         evidence_good = complete / max(1, len(evidence))
 
+    if task.cfg.evidence_mode:
+        core_w, grounded_w, tool_w, evidence_w = 0.60, 0.20, 0.10, 0.10
+    else:
+        core_w, grounded_w, tool_w, evidence_w = 0.70, 0.20, 0.10, 0.0
+
     score = (
-        0.65 * (1.0 if core_pass else 0.0)
-        + 0.15 * grounded
-        + 0.10 * tooling
-        + 0.10 * evidence_good
+        (core_w * (1.0 if core_pass else 0.0))
+        + (grounded_w * grounded)
+        + (tool_w * tooling)
+        + (evidence_w * evidence_good)
     ) * 100.0
     detail = {
         "core_pass": core_pass,
@@ -303,6 +328,12 @@ def _score_task(result: dict[str, object], core_pass: bool) -> tuple[float, dict
         "tool_call_count": len(tool_calls),
         "evidence_count": len(evidence),
         "evidence_quality": round(evidence_good, 3),
+        "weights": {
+            "core": core_w,
+            "grounded": grounded_w,
+            "tooling": tool_w,
+            "evidence": evidence_w,
+        },
     }
     return round(score, 2), detail
 
@@ -315,18 +346,36 @@ def run_suite(
     use_llm: bool,
     max_steps: int,
     task_count: int,
+    target_score: float = 95.0,
+    isolated: bool = True,
+    persist_db: bool = False,
+    db_path: Path | None = None,
 ) -> Path:
-    data_dir.mkdir(parents=True, exist_ok=True)
-    eval_dir = data_dir / "evals"
+    base_data_dir = Path(data_dir).expanduser().resolve()
+    base_data_dir.mkdir(parents=True, exist_ok=True)
+    eval_dir = base_data_dir / "evals"
     eval_dir.mkdir(parents=True, exist_ok=True)
 
-    db_path = data_dir / "industry_bench.sqlite3"
-    store = SQLiteStore(db_path)
-    files = FileBrowser(files_root)
-    llm = OllamaClient(model=model, base_url=ollama_url) if use_llm else NoLLM()
-    agent = LocalAgent(store=store, files=files, llm=llm, downloads_dir=data_dir / "downloads")
+    use_isolated = bool(isolated and not persist_db)
+    resolved_db_path, run_data_dir, run_id = resolve_bench_paths(
+        prefix="industry_bench",
+        isolated=use_isolated,
+        db_path=db_path if persist_db else None,
+        data_dir=base_data_dir,
+    )
+    run_data_dir.mkdir(parents=True, exist_ok=True)
 
-    workspace = _seed_workspace(store, files_root)
+    effective_files_root = (run_data_dir / "files") if use_isolated else Path(files_root).expanduser().resolve()
+    effective_files_root.mkdir(parents=True, exist_ok=True)
+    downloads_dir = run_data_dir / "downloads"
+    downloads_dir.mkdir(parents=True, exist_ok=True)
+
+    store = SQLiteStore(resolved_db_path)
+    files = FileBrowser(effective_files_root)
+    llm = OllamaClient(model=model, base_url=ollama_url) if use_llm else NoLLM()
+    agent = LocalAgent(store=store, files=files, llm=llm, downloads_dir=downloads_dir)
+
+    workspace = _seed_workspace(store, effective_files_root)
     tasks = _build_tasks(workspace, max_steps=max_steps, prefer_local_core=not use_llm)
     if task_count > 0:
         tasks = tasks[: max(1, min(task_count, len(tasks)))]
@@ -335,16 +384,19 @@ def run_suite(
     category_scores: dict[str, list[float]] = {}
     total_score = 0.0
     passed = 0
+    passed_95 = 0
     sid: str | None = None
 
     for task in tasks:
         run = agent.run_agent(sid, task.message, config=task.cfg)
         sid = str(run.get("session_id") or sid)
         core_pass, check_note = _check_task(run, task.check)
-        score, score_detail = _score_task(run, core_pass=core_pass)
+        score, score_detail = _score_task(run, task=task, core_pass=core_pass)
         total_score += score
         if score >= 70.0 and core_pass:
             passed += 1
+        if score >= float(target_score) and core_pass:
+            passed_95 += 1
         category_scores.setdefault(task.category, []).append(score)
         results.append(
             {
@@ -372,9 +424,17 @@ def run_suite(
             "avg_score": round(statistics.mean(vals), 2),
             "min_score": round(min(vals), 2),
             "max_score": round(max(vals), 2),
+            "pass_rate_95": round((sum(1 for v in vals if v >= float(target_score)) / max(1, len(vals))) * 100.0, 2),
+            "meets_95": bool(min(vals) >= float(target_score)),
         }
         for cat, vals in category_scores.items()
     }
+
+    overall_score = round(total_score / max(1, len(tasks)), 2)
+    pass_rate_95 = round((passed_95 / max(1, len(tasks))) * 100.0, 2)
+    meets_95 = bool(overall_score >= float(target_score)) and all(
+        bool(item.get("meets_95")) for item in category_summary.values()
+    )
 
     report = {
         "created_at": int(time.time()),
@@ -383,13 +443,21 @@ def run_suite(
         "use_llm": bool(use_llm),
         "model": model,
         "ollama_url": ollama_url,
-        "score": round(total_score / max(1, len(tasks)), 2),
+        "run_id": run_id,
+        "db_path": str(resolved_db_path),
+        "data_dir": str(run_data_dir),
+        "isolated": bool(use_isolated),
+        "persist_db": bool(persist_db),
+        "score": overall_score,
         "pass_rate": round((passed / max(1, len(tasks))) * 100.0, 2),
+        "target_score": float(target_score),
+        "pass_rate_95": pass_rate_95,
+        "meets_95": meets_95,
         "categories": category_summary,
         "results": results,
     }
 
-    out = eval_dir / f"industry_bench_{int(time.time())}.json"
+    out = eval_dir / f"industry_bench_{run_id}.json"
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return out
 
@@ -403,6 +471,10 @@ def main() -> None:
     parser.add_argument("--use-llm", action="store_true")
     parser.add_argument("--max-steps", type=int, default=8)
     parser.add_argument("--task-count", type=int, default=0, help="0 means run full suite")
+    parser.add_argument("--target-score", type=float, default=95.0)
+    parser.add_argument("--isolated", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--persist-db", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--db-path", default="")
     args = parser.parse_args()
 
     out = run_suite(
@@ -413,12 +485,22 @@ def main() -> None:
         use_llm=bool(args.use_llm),
         max_steps=int(args.max_steps),
         task_count=int(args.task_count),
+        target_score=float(args.target_score),
+        isolated=bool(args.isolated),
+        persist_db=bool(args.persist_db),
+        db_path=Path(args.db_path).expanduser().resolve() if str(args.db_path or "").strip() else None,
     )
     payload = json.loads(out.read_text(encoding="utf-8"))
     print(f"Suite: {payload['suite']}")
     print(f"Tasks: {payload['task_count']}")
     print(f"Score: {payload['score']}")
     print(f"Pass rate: {payload['pass_rate']}%")
+    print(f"Pass rate >= {payload['target_score']}: {payload['pass_rate_95']}%")
+    print(f"Meets 95 target: {payload['meets_95']}")
+    print(f"Run ID: {payload['run_id']}")
+    print(f"Isolated: {payload['isolated']}")
+    print(f"DB: {payload['db_path']}")
+    print(f"Run data dir: {payload['data_dir']}")
     print(f"Report: {out}")
 
 

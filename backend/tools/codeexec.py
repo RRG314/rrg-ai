@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import shlex
+import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,6 +42,7 @@ def run_command(
     max_output_chars: int = 16000,
 ) -> CodeCommandResult:
     parts = _normalize_command(command)
+    parts = _resolve_binary(parts)
     _validate_command(parts)
 
     started = time.monotonic()
@@ -80,7 +83,9 @@ def detect_test_command(cwd: Path, runner: str = "auto") -> list[str]:
         return ["go", "test", "./..."]
     if (cwd / "Cargo.toml").exists():
         return ["cargo", "test", "-q"]
-    if (cwd / "pytest.ini").exists() or (cwd / "tests").exists() or (cwd / "pyproject.toml").exists():
+    if (cwd / "tests").exists():
+        return ["python", "-m", "pytest", "-q", "tests"]
+    if (cwd / "pytest.ini").exists() or (cwd / "pyproject.toml").exists():
         return ["python", "-m", "pytest", "-q"]
 
     return ["python", "-m", "pytest", "-q"]
@@ -116,6 +121,22 @@ def _truncate_outputs(stdout: str, stderr: str, max_output_chars: int) -> tuple[
     clipped_stdout = stdout[:half]
     clipped_stderr = stderr[:half]
     return clipped_stdout, clipped_stderr, True
+
+
+def _resolve_binary(parts: list[str]) -> list[str]:
+    if not parts:
+        return parts
+    binary = parts[0]
+    name = Path(binary).name.lower()
+    if not name.startswith("python"):
+        return parts
+    if shutil.which(binary):
+        return parts
+    if sys.executable:
+        return [sys.executable, *parts[1:]]
+    if shutil.which("python3"):
+        return ["python3", *parts[1:]]
+    return parts
 
 
 def _coalesce_existing_paths(parts: list[str]) -> list[str]:

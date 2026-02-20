@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import secrets
 from dataclasses import asdict
 from pathlib import Path
@@ -13,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from .agent import AgentRunConfig, LocalAgent
 from .llm import OllamaClient
+from .system_check import run_system_check
 from .storage import SQLiteStore
 from .tools.docs import extract_text_from_bytes
 from .tools.filesystem import FileBrowser
@@ -25,21 +27,39 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.getenv("AI_DATA_DIR", ROOT / ".ai_data"))
 DOWNLOADS_DIR = DATA_DIR / "downloads"
 DB_PATH = DATA_DIR / "ai.sqlite3"
-FILES_ROOT = Path(os.getenv("AI_FILES_ROOT", str(Path.home()))).expanduser().resolve()
+FILES_ROOT = Path(os.getenv("AI_FILES_ROOT", str(ROOT))).expanduser().resolve()
 OLLAMA_MODEL = os.getenv("AI_MODEL", "llama3.2:3b")
 OLLAMA_URL = os.getenv("AI_OLLAMA_URL", "http://127.0.0.1:11434")
+REPO_COLLECTION_ROOT = Path(os.getenv("AI_REPO_COLLECTION_ROOT", str(ROOT.parent))).expanduser().resolve()
 RECURSIVE_ADIC_RANKING = os.getenv("AI_RECURSIVE_ADIC_RANKING", "1").lower() not in {"0", "false", "no"}
 RADF_BETA = float(os.getenv("AI_RADF_BETA", "0.35"))
 RADF_ALPHA = float(os.getenv("AI_RADF_ALPHA", "1.5"))
 REQUIRE_TOKEN = os.getenv("AI_REQUIRE_TOKEN", "1").lower() not in {"0", "false", "no"}
 ALLOW_ORIGIN_REGEX = os.getenv(
     "AI_ALLOWED_ORIGIN_REGEX",
-    r"^https?://(127\.0\.0\.1|localhost)(:\d+)?$|^https://rrg314\.github\.io$",
+    r"^https?://(127\.0\.0\.1|localhost)(:\d+)?$",
 )
+BOOTSTRAP_PAIRING_REQUIRED = os.getenv("AI_BOOTSTRAP_PAIRING_REQUIRED", "1").lower() not in {"0", "false", "no"}
 TOKEN_PATH = DATA_DIR / "api_token.txt"
+PAIRING_CODE_PATH = DATA_DIR / "pairing_code.txt"
+LOCAL_ORIGIN_PATTERN = re.compile(r"^https?://(127\.0\.0\.1|localhost)(:\d+)?$", re.IGNORECASE)
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _parse_learning_pdf_paths() -> list[Path]:
+    raw = os.getenv("AI_LEARNING_PDF_PATHS", "").strip()
+    if raw:
+        values = [part.strip() for part in raw.split(os.pathsep) if part.strip()]
+        return [Path(item).expanduser().resolve() for item in values]
+    return [
+        (Path.home() / "Downloads" / "The_Recursive_Adic_Number_Field__Construction__Analysis__and_Recursive_Depth_Transforms (1).pdf").resolve(),
+        (Path.home() / "Downloads" / "v.pdf").resolve(),
+    ]
+
+
+LEARNING_PDF_PATHS = _parse_learning_pdf_paths()
 
 
 def _load_or_create_token(path: Path) -> str:
@@ -55,7 +75,36 @@ def _load_or_create_token(path: Path) -> str:
     return token
 
 
+def _load_or_create_pairing_code(path: Path) -> str:
+    env_code = os.getenv("AI_BOOTSTRAP_PAIRING_CODE", "").strip()
+    if env_code:
+        return env_code
+    if path.exists():
+        code = path.read_text(encoding="utf-8").strip()
+        if code:
+            return code
+    code = secrets.token_urlsafe(10)
+    path.write_text(code, encoding="utf-8")
+    return code
+
+
+def _is_local_origin(origin: str) -> bool:
+    return bool(LOCAL_ORIGIN_PATTERN.match(origin.strip()))
+
+
+def _origin_requires_pairing(origin: str) -> bool:
+    if not REQUIRE_TOKEN:
+        return False
+    if not BOOTSTRAP_PAIRING_REQUIRED:
+        return False
+    clean = origin.strip()
+    if not clean:
+        return False
+    return not _is_local_origin(clean)
+
+
 API_TOKEN = _load_or_create_token(TOKEN_PATH)
+BOOTSTRAP_PAIRING_CODE = _load_or_create_pairing_code(PAIRING_CODE_PATH)
 
 store = SQLiteStore(
     DB_PATH,
@@ -65,7 +114,14 @@ store = SQLiteStore(
 )
 files = FileBrowser(FILES_ROOT)
 llm = OllamaClient(model=OLLAMA_MODEL, base_url=OLLAMA_URL)
-agent = LocalAgent(store=store, files=files, llm=llm, downloads_dir=DOWNLOADS_DIR)
+agent = LocalAgent(
+    store=store,
+    files=files,
+    llm=llm,
+    downloads_dir=DOWNLOADS_DIR,
+    repo_collection_root=REPO_COLLECTION_ROOT,
+    learning_pdf_paths=LEARNING_PDF_PATHS,
+)
 
 app = FastAPI(title="RRG AI Local Backend", version="1.0.0")
 
@@ -78,7 +134,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-AUTH_EXEMPT_PATHS = {"/api/health", "/api/bootstrap"}
+AUTH_EXEMPT_PATHS = {"/api/health", "/api/bootstrap", "/api/pairing-code"}
 
 
 @app.middleware("http")
@@ -149,11 +205,19 @@ class CodeTestRequest(BaseModel):
     timeout_sec: int = 120
 
 
+class SystemCheckRequest(BaseModel):
+    min_score: float = 95.0
+    use_llm: bool = False
+    max_steps: int = 8
+    task_limit: int = 0
+
+
 @app.get("/api/health")
-def health() -> dict[str, object]:
+def health(request: Request) -> dict[str, object]:
     status = llm.status()
     ocr_ok, ocr_reason = supports_image_ocr()
-    return {
+    origin = request.headers.get("origin", "").strip()
+    payload: dict[str, object] = {
         "ok": True,
         "backend": "local-python",
         "files_root": str(FILES_ROOT),
@@ -163,21 +227,60 @@ def health() -> dict[str, object]:
         "recursive_adic_ranking": RECURSIVE_ADIC_RANKING,
         "radf_beta": RADF_BETA,
         "radf_alpha": RADF_ALPHA,
+        "recursive_learning_repo_root": str(REPO_COLLECTION_ROOT),
+        "recursive_learning_pdf_paths": [str(p) for p in LEARNING_PDF_PATHS],
         "image_ocr_available": ocr_ok,
         "image_ocr_reason": ocr_reason,
         "auth_required": REQUIRE_TOKEN,
         "allow_origin_regex": ALLOW_ORIGIN_REGEX,
+        "bootstrap_pairing_required": BOOTSTRAP_PAIRING_REQUIRED,
+        "pairing_required_for_origin": _origin_requires_pairing(origin),
     }
+    if not origin or _is_local_origin(origin):
+        payload["pairing_code"] = BOOTSTRAP_PAIRING_CODE
+    return payload
 
 
 @app.get("/api/bootstrap")
-def bootstrap() -> dict[str, object]:
+def bootstrap(request: Request) -> dict[str, object]:
+    origin = request.headers.get("origin", "").strip()
+    pairing_required = _origin_requires_pairing(origin)
+    provided_pairing_code = request.headers.get("x-ai-pairing-code", "").strip()
+    if not provided_pairing_code:
+        provided_pairing_code = str(request.query_params.get("pairing_code") or "").strip()
+
+    if pairing_required:
+        paired = bool(provided_pairing_code) and secrets.compare_digest(provided_pairing_code, BOOTSTRAP_PAIRING_CODE)
+        if not paired:
+            return {
+                "ok": True,
+                "auth_required": REQUIRE_TOKEN,
+                "api_token": "",
+                "backend": "local-python",
+                "pairing_required": True,
+                "pairing_status": "required",
+                "pairing_hint": (
+                    "Enter the local pairing code. You can find it in the local backend UI status "
+                    "or by running: cat .ai_data/pairing_code.txt"
+                ),
+            }
+
     return {
         "ok": True,
         "auth_required": REQUIRE_TOKEN,
         "api_token": API_TOKEN if REQUIRE_TOKEN else "",
         "backend": "local-python",
+        "pairing_required": pairing_required,
+        "pairing_status": "paired" if pairing_required else "not_required",
     }
+
+
+@app.get("/api/pairing-code")
+def pairing_code(request: Request) -> dict[str, object]:
+    origin = request.headers.get("origin", "").strip()
+    if _origin_requires_pairing(origin):
+        raise HTTPException(status_code=403, detail="Pairing code may only be requested from localhost origin")
+    return {"ok": True, "pairing_code": BOOTSTRAP_PAIRING_CODE}
 
 
 @app.post("/api/chat")
@@ -416,6 +519,26 @@ def code_test(req: CodeTestRequest) -> dict[str, object]:
         )
         payload = asdict(result)
         payload["detected_command"] = command
+        return payload
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/system-check")
+def system_check(req: SystemCheckRequest) -> dict[str, object]:
+    try:
+        report_path, report = run_system_check(
+            data_dir=DATA_DIR,
+            files_root=FILES_ROOT,
+            model=OLLAMA_MODEL,
+            ollama_url=OLLAMA_URL,
+            use_llm=bool(req.use_llm),
+            max_steps=max(1, min(int(req.max_steps), 16)),
+            min_score=float(req.min_score),
+            task_limit=max(0, min(int(req.task_limit), 100)),
+        )
+        payload = dict(report)
+        payload["report_path"] = str(report_path)
         return payload
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

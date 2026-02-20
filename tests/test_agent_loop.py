@@ -132,6 +132,13 @@ def test_agent_adaptive_update_persists_rule_and_heuristics(tmp_path: Path) -> N
     adaptive = res.get("adaptive_update")
     assert isinstance(adaptive, dict)
     assert "task_success" in adaptive
+    assert "success_score" in adaptive
+    assert "task_type" in adaptive
+    assert "worked" in adaptive
+    assert "failed" in adaptive
+    assert "tool_routing" in adaptive
+    assert "planning_changes" in adaptive
+    assert "policy_update" in adaptive
     assert "heuristic_updates" in adaptive
     assert adaptive.get("improvement_rule_id")
 
@@ -141,6 +148,8 @@ def test_agent_adaptive_update_persists_rule_and_heuristics(tmp_path: Path) -> N
     assert rules
     heuristics = store.get_planning_heuristics()
     assert "planner_confidence" in heuristics
+    prefs = store.list_preferences(sid, limit=20)
+    assert any(p.key.startswith("policy.") and p.source == "adaptive-agent" for p in prefs)
 
 
 def test_agent_math_eval_tool(tmp_path: Path) -> None:
@@ -169,3 +178,56 @@ def test_agent_math_eval_tool(tmp_path: Path) -> None:
     prov = res.get("provenance") or []
     joined = " ".join(str(p.get("snippet") or "") for p in prov if isinstance(p, dict))
     assert "354" in joined
+
+
+def test_agent_recursive_learning_pipeline_tool(tmp_path: Path) -> None:
+    db = tmp_path / "ai.sqlite3"
+    root = tmp_path / "files"
+    root.mkdir(parents=True, exist_ok=True)
+
+    repo_root = tmp_path / "repos"
+    repo = repo_root / "my_ai_repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    (repo / ".git").mkdir(parents=True, exist_ok=True)
+    (repo / "topological_optimizer.md").write_text(
+        "Recursive adic topological optimizer with dual number and hyperreal policy updates.",
+        encoding="utf-8",
+    )
+
+    store = SQLiteStore(db)
+    files = FileBrowser(root)
+    agent = LocalAgent(
+        store=store,
+        files=files,
+        llm=_FakeLLM(),
+        downloads_dir=tmp_path / "downloads",
+        repo_collection_root=repo_root,
+        learning_pdf_paths=[],
+    )
+
+    cfg = AgentRunConfig(
+        strict_facts=True,
+        evidence_mode=True,
+        prefer_local_core=True,
+        allow_web=False,
+        allow_files=False,
+        allow_docs=True,
+        max_steps=8,
+    )
+    res = agent.run_agent(None, "recursive learning pipeline for topological optimizer", config=cfg)
+    tool_calls = res.get("tool_calls") or []
+    assert any(
+        isinstance(call, dict)
+        and call.get("name") == "skill.recursive_learning_pipeline"
+        and call.get("status") == "ok"
+        for call in tool_calls
+    )
+    recursive = res.get("recursive_learning")
+    assert isinstance(recursive, dict)
+    assert recursive.get("event_id")
+    docs = store.list_documents(limit=50)
+    assert any(str(d.get("kind") or "") == "repo-algorithm" for d in docs)
+
+    sid = str(res.get("session_id") or "")
+    events = store.list_recursive_learning_events(sid, limit=5)
+    assert events

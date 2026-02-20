@@ -22,6 +22,7 @@ def test_detect_test_command_prefers_pytest(tmp_path: Path) -> None:
     (tmp_path / "tests").mkdir(parents=True, exist_ok=True)
     detected = detect_test_command(tmp_path, runner="auto")
     assert detected[:3] == ["python", "-m", "pytest"]
+    assert detected[-1] == "tests"
 
 
 def test_run_command_unquoted_path_with_spaces(tmp_path: Path) -> None:

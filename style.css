@@ -201,6 +201,20 @@ details.advanced summary {
   margin-top: 8px;
 }
 
+#system-check-view {
+  margin: 0;
+  padding: 8px;
+  border: 1px solid #d8e1ec;
+  border-radius: 8px;
+  background: #ffffff;
+  min-height: 70px;
+  max-height: 190px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
 .chat-log {
   overflow: auto;
   min-height: 240px;

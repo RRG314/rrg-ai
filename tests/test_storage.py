@@ -127,3 +127,47 @@ def test_adaptive_heuristics_and_rules_tables(tmp_path: Path) -> None:
     snapshot = store.memory_snapshot(sid, limit=20)
     assert snapshot["planning_heuristics"]
     assert snapshot["improvement_rules"]
+
+
+def test_recursive_learning_events_roundtrip(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "ai.sqlite3")
+    sid = store.ensure_session(None, "recursive session")
+
+    event_id = store.add_recursive_learning_event(
+        session_id=sid,
+        task_id="task-rl-1",
+        layer="recursive-learning-v1",
+        score=0.87,
+        depth=2.4,
+        dual_grad=0.11,
+        hyper_delta=0.0003,
+        heuristic_updates={"docs_priority": {"old": 0.62, "new": 0.66, "delta": 0.04}},
+        metrics={"step_completion": 1.0, "tool_error_rate": 0.0},
+    )
+    assert event_id > 0
+
+    events = store.list_recursive_learning_events(sid, limit=10)
+    assert events
+    first = events[0]
+    assert first.task_id == "task-rl-1"
+    assert first.layer == "recursive-learning-v1"
+    assert "docs_priority" in first.heuristic_updates
+
+    snapshot = store.memory_snapshot(sid, limit=20)
+    assert snapshot["recursive_learning_events"]
+
+
+def test_search_chunks_matches_doc_name_and_split_tokens(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "ai.sqlite3")
+    store.add_document(
+        name="eval-doc:radf_core",
+        source="eval-seed",
+        kind="text",
+        text="Depth-Laplace weighting improves retrieval ranking.",
+    )
+    hits_name = store.search_chunks("doc pipeline for radf_core", limit=5)
+    assert hits_name
+    assert str(hits_name[0].get("doc_name") or "").endswith("radf_core")
+
+    hits_split = store.search_chunks("radf-core", limit=5)
+    assert hits_split

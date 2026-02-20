@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
+import socket
 import urllib.parse
+import ipaddress
 from pathlib import Path
 
 import requests
@@ -11,6 +13,8 @@ from pypdf import PdfReader
 
 USER_AGENT = "RRG-AI-Local/1.0 (+https://github.com/RRG314/ai)"
 HEADERS = {"User-Agent": USER_AGENT}
+BLOCKED_HOSTS = {"localhost", "localhost.localdomain", "ip6-localhost", "metadata.google.internal"}
+BLOCKED_HOST_SUFFIXES = (".local", ".internal", ".home", ".lan")
 
 
 def search_web(query: str, max_results: int = 6) -> list[dict[str, str]]:
@@ -42,6 +46,7 @@ def search_web(query: str, max_results: int = 6) -> list[dict[str, str]]:
 
 
 def fetch_url_text(url: str, max_chars: int = 22000) -> tuple[str, str]:
+    _assert_safe_remote_url(url)
     response = requests.get(url, timeout=35, headers=HEADERS)
     response.raise_for_status()
 
@@ -61,6 +66,7 @@ def fetch_url_text(url: str, max_chars: int = 22000) -> tuple[str, str]:
 
 
 def download_url(url: str, output_dir: Path, max_bytes: int = 40 * 1024 * 1024) -> dict[str, str | int]:
+    _assert_safe_remote_url(url)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -201,3 +207,47 @@ def _parse_dictionary_payload(
 
 def _normalize_word(word: str) -> str:
     return re.sub(r"[^A-Za-z'-]", "", word).strip().lower()
+
+
+def _assert_safe_remote_url(url: str) -> None:
+    parsed = urllib.parse.urlparse(url.strip())
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in {"http", "https"}:
+        raise ValueError("Only http/https URLs are allowed")
+
+    host = (parsed.hostname or "").strip().lower().strip(".")
+    if not host:
+        raise ValueError("URL host is missing")
+    if host in BLOCKED_HOSTS or host.endswith(BLOCKED_HOST_SUFFIXES):
+        raise ValueError(f"Blocked private host target: {host}")
+    if _looks_like_ip(host) and _ip_is_non_public(host):
+        raise ValueError(f"Blocked non-public IP target: {host}")
+
+    port = parsed.port or (443 if scheme == "https" else 80)
+    try:
+        resolved = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return
+    except Exception:
+        return
+
+    for item in resolved:
+        sockaddr = item[4]
+        if not sockaddr:
+            continue
+        ip = str(sockaddr[0]).split("%", 1)[0]
+        if _ip_is_non_public(ip):
+            raise ValueError(f"Blocked non-public resolved address for {host}: {ip}")
+
+
+def _looks_like_ip(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host.split("%", 1)[0])
+        return True
+    except ValueError:
+        return False
+
+
+def _ip_is_non_public(value: str) -> bool:
+    ip = ipaddress.ip_address(value.split("%", 1)[0])
+    return not ip.is_global

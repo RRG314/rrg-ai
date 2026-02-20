@@ -14,8 +14,13 @@
     connectionHint: document.getElementById("connection-hint"),
     quickAction: document.getElementById("quick-action"),
     applyQuickAction: document.getElementById("apply-quick-action"),
+    easyTaskType: document.getElementById("easy-task-type"),
+    easyTaskInput: document.getElementById("easy-task-input"),
+    runEasyTask: document.getElementById("run-easy-task"),
     backendUrl: document.getElementById("backend-url"),
     connectBackend: document.getElementById("connect-backend"),
+    runSystemCheck: document.getElementById("run-system-check"),
+    systemCheckView: document.getElementById("system-check-view"),
     uploadFile: document.getElementById("upload-file"),
     uploadButton: document.getElementById("upload-button"),
     imageFile: document.getElementById("image-file"),
@@ -23,6 +28,7 @@
     imageButton: document.getElementById("image-button"),
     ingestUrl: document.getElementById("ingest-url"),
     ingestButton: document.getElementById("ingest-button"),
+    pairingCode: document.getElementById("pairing-code"),
     strictFacts: document.getElementById("strict-facts"),
     runAgent: document.getElementById("run-agent"),
     evidenceMode: document.getElementById("evidence-mode"),
@@ -31,6 +37,7 @@
     agentToolsView: document.getElementById("agent-tools-view"),
     agentProvenanceView: document.getElementById("agent-provenance-view"),
     agentEvidenceView: document.getElementById("agent-evidence-view"),
+    agentLearnedView: document.getElementById("agent-learned-view"),
   };
 
   const runtime = {
@@ -47,6 +54,8 @@
     radfBeta: 0.35,
     imageOCRAvailable: false,
     imageOCRReason: "",
+    pairingRequired: false,
+    pairingHint: "",
   };
 
   const state = loadState();
@@ -56,9 +65,12 @@
   }
 
   ui.backendUrl.value = state.backendUrl || "";
+  ui.pairingCode.value = state.pairingCode || "";
   ui.strictFacts.checked = state.strictFacts !== false;
   ui.runAgent.checked = state.runAgent !== false;
   ui.evidenceMode.checked = state.evidenceMode !== false;
+  ui.easyTaskInput.value = state.easyTaskInput || "";
+  ui.easyTaskType.value = state.easyTaskType || "";
 
   renderAll();
   updateConnectionHint();
@@ -72,10 +84,15 @@
   ui.clearMemory.addEventListener("click", onClearMemory);
   ui.autoConnect.addEventListener("click", onAutoConnect);
   ui.applyQuickAction.addEventListener("click", onQuickAction);
+  ui.runEasyTask.addEventListener("click", onRunEasyTask);
+  ui.easyTaskInput.addEventListener("change", onEasyTaskInputChanged);
+  ui.easyTaskType.addEventListener("change", onEasyTaskTypeChanged);
   ui.connectBackend.addEventListener("click", onConnectBackend);
+  ui.runSystemCheck.addEventListener("click", onRunSystemCheck);
   ui.uploadButton.addEventListener("click", onUpload);
   ui.imageButton.addEventListener("click", onAnalyzeImage);
   ui.ingestButton.addEventListener("click", onIngest);
+  ui.pairingCode.addEventListener("change", onPairingCodeChanged);
   ui.strictFacts.addEventListener("change", onStrictFactsChanged);
   ui.runAgent.addEventListener("change", onRunAgentChanged);
   ui.evidenceMode.addEventListener("change", onEvidenceModeChanged);
@@ -148,6 +165,16 @@
     await checkBackend(true);
   }
 
+  function onEasyTaskInputChanged() {
+    state.easyTaskInput = (ui.easyTaskInput.value || "").trim();
+    saveState();
+  }
+
+  function onEasyTaskTypeChanged() {
+    state.easyTaskType = (ui.easyTaskType.value || "").trim();
+    saveState();
+  }
+
   function onQuickAction() {
     const action = (ui.quickAction.value || "").trim();
     if (!action) return;
@@ -168,6 +195,43 @@
     ui.chatInput.focus();
   }
 
+  function onRunEasyTask() {
+    const task = (ui.easyTaskType.value || "").trim();
+    const detail = (ui.easyTaskInput.value || "").trim();
+    if (!task) {
+      appendMessage(state.currentSessionId, "ai", "Choose an Easy Task first.");
+      return;
+    }
+
+    let prompt = "";
+    if (task === "learn_topic") {
+      prompt = detail
+        ? `Explain ${detail} in clear simple language with key points and practical examples.`
+        : "Explain this topic in clear simple language with key points and practical examples.";
+    } else if (task === "summarize_site") {
+      prompt = detail
+        ? `read website ${detail} and summarize the main points in plain language`
+        : "read website https://example.com and summarize the main points in plain language";
+    } else if (task === "read_file") {
+      prompt = detail ? `read file ${detail}` : "read file /Users/stevenreid/Documents/your-file.txt";
+    } else if (task === "search_web") {
+      prompt = detail ? `search the web for ${detail}` : "search the web for latest local ai benchmarks";
+    } else if (task === "define_word") {
+      prompt = detail ? `define ${detail}` : "define entropy";
+    } else if (task === "run_tests") {
+      prompt = detail ? `run tests in ${detail}` : "run tests in .";
+    }
+
+    if (!prompt) {
+      appendMessage(state.currentSessionId, "ai", "Could not build task prompt. Try another Easy Task option.");
+      return;
+    }
+
+    ui.chatInput.value = prompt;
+    ui.chatInput.focus();
+    appendMessage(state.currentSessionId, "ai", `Prepared task: ${prompt}`);
+  }
+
   function onStrictFactsChanged() {
     state.strictFacts = Boolean(ui.strictFacts.checked);
     saveState();
@@ -178,9 +242,100 @@
     saveState();
   }
 
+  function onPairingCodeChanged() {
+    state.pairingCode = (ui.pairingCode.value || "").trim();
+    saveState();
+  }
+
   function onEvidenceModeChanged() {
     state.evidenceMode = Boolean(ui.evidenceMode.checked);
     saveState();
+  }
+
+  async function onRunSystemCheck() {
+    if (!runtime.backendOnline) {
+      await checkBackend(true);
+    }
+    if (!runtime.backendOnline) {
+      appendMessage(
+        state.currentSessionId,
+        "ai",
+        "System check needs the local backend. Run ./start_local_ai.sh and click Auto Connect."
+      );
+      return;
+    }
+
+    ui.runSystemCheck.disabled = true;
+    if (ui.systemCheckView) {
+      ui.systemCheckView.textContent = "Running local system check (target: 95%) ...";
+    }
+
+    try {
+      const response = await apiFetch("/api/system-check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          min_score: 95.0,
+          use_llm: false,
+          max_steps: 8,
+          task_limit: 0,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || `system check failed (${response.status})`);
+      }
+
+      const lines = [];
+      lines.push(`Score: ${payload.score}% (target ${payload.target_score}%)`);
+      lines.push(`Passed: ${payload.passed}/${payload.check_count}`);
+      lines.push(`Meets target: ${Boolean(payload.meets_target)}`);
+      lines.push(`Categories meet target: ${Boolean(payload.categories_meet_target)}`);
+      lines.push(`Meets target for all systems: ${Boolean(payload.meets_target_all_systems)}`);
+      if (payload.report_path) {
+        lines.push(`Report: ${payload.report_path}`);
+      }
+      const categories = payload.categories && typeof payload.categories === "object" ? payload.categories : {};
+      const names = Object.keys(categories).sort();
+      if (names.length) {
+        lines.push("", "By category:");
+        names.forEach((name) => {
+          const cat = categories[name] || {};
+          lines.push(`- ${name}: ${cat.accuracy}% (${cat.passed}/${cat.count})`);
+        });
+      }
+      const rendered = lines.join("\n");
+      if (ui.systemCheckView) {
+        ui.systemCheckView.textContent = rendered;
+      }
+      state.lastSystemCheck = {
+        at: Date.now(),
+        score: Number(payload.score || 0),
+        target: Number(payload.target_score || 95),
+        passed: Number(payload.passed || 0),
+        count: Number(payload.check_count || 0),
+        meets: Boolean(payload.meets_target),
+        categoriesMeet: Boolean(payload.categories_meet_target),
+        meetsAllSystems: Boolean(payload.meets_target_all_systems),
+        reportPath: String(payload.report_path || ""),
+      };
+      saveState();
+
+      appendMessage(
+        state.currentSessionId,
+        "ai",
+        `System check complete.\n${rendered}`
+      );
+    } catch (err) {
+      const msg = `System check failed: ${String(err)}`;
+      if (ui.systemCheckView) {
+        ui.systemCheckView.textContent = msg;
+      }
+      appendMessage(state.currentSessionId, "ai", msg);
+    } finally {
+      ui.runSystemCheck.disabled = false;
+      renderStatus();
+    }
   }
 
   async function onUpload() {
@@ -340,6 +495,7 @@
   async function checkBackend(showMessage) {
     const candidates = discoverBackendCandidates();
     let connected = false;
+    let pairingLock = null;
 
     for (const base of candidates) {
       if (!isLocalBackendUrl(base)) {
@@ -360,12 +516,44 @@
         runtime.imageOCRAvailable = Boolean(payload.image_ocr_available);
         runtime.imageOCRReason = payload.image_ocr_reason || "";
         runtime.authRequired = Boolean(payload.auth_required);
+        runtime.pairingRequired = Boolean(payload.pairing_required_for_origin);
+        runtime.pairingHint = "";
 
-        const bootstrap = await bootstrapBackend(base);
+        if (payload.pairing_code && !state.pairingCode) {
+          state.pairingCode = String(payload.pairing_code);
+          ui.pairingCode.value = state.pairingCode;
+          saveState();
+        }
+
+        let bootstrap = await bootstrapBackend(base, state.pairingCode || "");
+        if (Boolean(bootstrap.pairing_required) && runtime.authRequired && !bootstrap.api_token) {
+          pairingLock = {
+            base,
+            hint:
+              bootstrap.pairing_hint ||
+              "Pairing code required. Open local backend UI or run `cat .ai_data/pairing_code.txt`.",
+          };
+
+          if (showMessage && !state.pairingCode) {
+            const entered = window.prompt(
+              "Enter pairing code for local backend (shown in terminal/local UI):",
+              ""
+            );
+            if (entered && entered.trim()) {
+              state.pairingCode = entered.trim();
+              ui.pairingCode.value = state.pairingCode;
+              saveState();
+              bootstrap = await bootstrapBackend(base, state.pairingCode || "");
+            }
+          }
+        }
+
         runtime.apiToken = bootstrap.api_token || "";
         runtime.authRequired = Boolean(bootstrap.auth_required);
+        runtime.pairingRequired = Boolean(bootstrap.pairing_required) && runtime.authRequired;
+        runtime.pairingHint = bootstrap.pairing_hint || "";
         if (runtime.authRequired && !runtime.apiToken) {
-          throw new Error("Backend auth token unavailable");
+          throw new Error(runtime.pairingRequired ? "Backend pairing code required" : "Backend auth token unavailable");
         }
 
         state.backendUrl = base;
@@ -389,23 +577,32 @@
     if (!connected) {
       runtime.backendOnline = false;
       runtime.backendMode = "static-browser";
-      runtime.backendBase = "";
+      runtime.backendBase = pairingLock && pairingLock.base ? pairingLock.base : "";
       runtime.apiToken = "";
       runtime.authRequired = true;
       runtime.modelAvailable = false;
       runtime.model = "";
-      runtime.modelReason = "No backend candidate responded";
+      runtime.modelReason = pairingLock ? "Pairing required to unlock token" : "No backend candidate responded";
       runtime.recursiveAdicRanking = false;
       runtime.radfAlpha = 1.5;
       runtime.radfBeta = 0.35;
       runtime.imageOCRAvailable = false;
       runtime.imageOCRReason = "Backend offline";
+      runtime.pairingRequired = Boolean(pairingLock);
+      runtime.pairingHint = pairingLock ? pairingLock.hint : "";
 
       if (showMessage) {
-        addBubble(
-          "ai",
-          "Still not connected to a local backend.\nRun this once in Terminal:\ncd /Users/stevenreid/Documents/New\\ project/repo_audit/rrg314/ai\n./start_local_ai.sh"
-        );
+        if (pairingLock) {
+          addBubble(
+            "ai",
+            `Backend is reachable at ${pairingLock.base} but locked.\n${pairingLock.hint}\nThen retry Auto Connect.`
+          );
+        } else {
+          addBubble(
+            "ai",
+            "Still not connected to a local backend.\nRun this once in Terminal:\ncd /Users/stevenreid/Documents/New\\ project/repo_audit/rrg314/ai\n./start_local_ai.sh"
+          );
+        }
       }
     }
 
@@ -525,6 +722,17 @@
       lines.push(`Evidence objects: ${evidence.length}`);
     }
 
+    const adaptive = payload.adaptive_update && typeof payload.adaptive_update === "object" ? payload.adaptive_update : null;
+    if (adaptive) {
+      const scoreRaw = Number(adaptive.success_score);
+      if (Number.isFinite(scoreRaw)) {
+        lines.push(`Adaptive score: ${scoreRaw.toFixed(3)} | success: ${Boolean(adaptive.task_success)}`);
+      }
+      if (adaptive.policy_update && adaptive.policy_update.summary) {
+        lines.push(`Policy update: ${adaptive.policy_update.summary}`);
+      }
+    }
+
     return lines.join("\n");
   }
 
@@ -545,6 +753,9 @@
       ui.agentEvidenceView.textContent = Boolean(state.evidenceMode)
         ? "Evidence mode active. Waiting for evidence objects..."
         : "Evidence mode off.";
+    }
+    if (ui.agentLearnedView) {
+      ui.agentLearnedView.textContent = "Waiting for adaptive update...";
     }
   }
 
@@ -613,6 +824,56 @@
             .join("\n\n")
         : "No evidence objects.";
     }
+
+    const adaptive = payload.adaptive_update && typeof payload.adaptive_update === "object" ? payload.adaptive_update : null;
+    if (ui.agentLearnedView) {
+      if (!adaptive) {
+        ui.agentLearnedView.textContent = "No adaptive update returned.";
+      } else {
+        const learned = [];
+        learned.push(`Task type: ${adaptive.task_type || "unknown"}`);
+        const scoreRaw = Number(adaptive.success_score);
+        const score = Number.isFinite(scoreRaw) ? scoreRaw.toFixed(3) : "n/a";
+        learned.push(`Success: ${Boolean(adaptive.task_success)} | score: ${score}`);
+
+        const worked = Array.isArray(adaptive.worked) ? adaptive.worked : [];
+        if (worked.length) {
+          learned.push("", "Worked:");
+          worked.forEach((line) => learned.push(`- ${line}`));
+        }
+
+        const failed = Array.isArray(adaptive.failed) ? adaptive.failed : [];
+        if (failed.length) {
+          learned.push("", "Failed:");
+          failed.forEach((line) => learned.push(`- ${line}`));
+        }
+
+        const routing = adaptive.tool_routing && typeof adaptive.tool_routing === "object" ? adaptive.tool_routing : {};
+        const good = Array.isArray(routing.good) ? routing.good : [];
+        const bad = Array.isArray(routing.bad) ? routing.bad : [];
+        if (good.length) {
+          learned.push("", "Good tool choices:");
+          good.forEach((line) => learned.push(`- ${line}`));
+        }
+        if (bad.length) {
+          learned.push("", "Bad tool choices:");
+          bad.forEach((line) => learned.push(`- ${line}`));
+        }
+
+        const changes = Array.isArray(adaptive.planning_changes) ? adaptive.planning_changes : [];
+        if (changes.length) {
+          learned.push("", "Planning changes:");
+          changes.forEach((line) => learned.push(`- ${line}`));
+        }
+
+        const policy = adaptive.policy_update && typeof adaptive.policy_update === "object" ? adaptive.policy_update : null;
+        if (policy && policy.summary) {
+          learned.push("", `Policy update: ${policy.summary}`);
+        }
+
+        ui.agentLearnedView.textContent = learned.join("\n");
+      }
+    }
   }
 
   function apiUrl(path) {
@@ -669,13 +930,18 @@
     }
   }
 
-  async function bootstrapBackend(base) {
+  async function bootstrapBackend(base, pairingCode) {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 2500);
     try {
+      const headers = {};
+      if (pairingCode) {
+        headers["X-AI-Pairing-Code"] = pairingCode;
+      }
       const response = await fetch(`${base}/api/bootstrap`, {
         method: "GET",
         cache: "no-store",
+        headers,
         signal: controller.signal,
       });
       if (!response.ok) throw new Error(`bootstrap ${response.status}`);
@@ -696,6 +962,10 @@
   }
 
   function updateConnectionHint() {
+    if (runtime.pairingRequired) {
+      ui.connectionHint.textContent = `Backend reachable at ${runtime.backendBase || "local host"} but pairing code is required`;
+      return;
+    }
     if (runtime.backendOnline) {
       ui.connectionHint.textContent = `Connected to local backend ${runtime.backendBase}`;
       return;
@@ -939,6 +1209,28 @@
     renderStatus();
     renderSessions();
     renderChat();
+    renderSystemCheck();
+  }
+
+  function renderSystemCheck() {
+    if (!ui.systemCheckView) return;
+    const report = state.lastSystemCheck;
+    if (!report) {
+      ui.systemCheckView.textContent = "System check has not been run yet.";
+      return;
+    }
+    const lines = [
+      `Last run: ${new Date(report.at || Date.now()).toLocaleString()}`,
+      `Score: ${Number(report.score || 0).toFixed(2)}% (target ${Number(report.target || 95).toFixed(2)}%)`,
+      `Passed: ${Number(report.passed || 0)}/${Number(report.count || 0)}`,
+      `Meets target: ${Boolean(report.meets)}`,
+      `Categories meet target: ${Boolean(report.categoriesMeet)}`,
+      `Meets target for all systems: ${Boolean(report.meetsAllSystems)}`,
+    ];
+    if (report.reportPath) {
+      lines.push(`Report: ${report.reportPath}`);
+    }
+    ui.systemCheckView.textContent = lines.join("\n");
   }
 
   function renderStatus() {
@@ -956,10 +1248,16 @@
     const runAgent = state.runAgent !== false ? "on" : "off";
     const evidenceMode = state.evidenceMode !== false ? "on" : "off";
     const auth = runtime.authRequired ? "token" : "off";
+    const pairing = runtime.pairingRequired ? "required" : state.pairingCode ? "set" : "none";
+    const quality = state.lastSystemCheck
+      ? `${Number(state.lastSystemCheck.score || 0).toFixed(1)}%${
+          state.lastSystemCheck.meetsAllSystems ? " (all-systems)" : " (partial)"
+        }`
+      : "not-run";
     const backendBase = runtime.backendBase || state.backendUrl || "none";
 
     ui.status.textContent =
-      `backend: ${backend} | auth: ${auth} | strict facts: ${strictFacts} | evidence mode: ${evidenceMode} | run-agent: ${runAgent} | model: ${model} | image-ocr: ${imageOCR} | radf: ${radf} | url: ${backendBase} | ` +
+      `backend: ${backend} | auth: ${auth} | pairing: ${pairing} | quality: ${quality} | strict facts: ${strictFacts} | evidence mode: ${evidenceMode} | run-agent: ${runAgent} | model: ${model} | image-ocr: ${imageOCR} | radf: ${radf} | url: ${backendBase} | ` +
       `docs(static): ${docs} | sessions: ${sessions} | facts: ${facts}`;
   }
 
@@ -1030,6 +1328,10 @@
           facts: {},
           currentSessionId: "",
           backendUrl: "",
+          pairingCode: "",
+          easyTaskType: "",
+          easyTaskInput: "",
+          lastSystemCheck: null,
           strictFacts: true,
           runAgent: true,
           evidenceMode: true,
@@ -1041,6 +1343,10 @@
         facts: parsed.facts || {},
         currentSessionId: parsed.currentSessionId || "",
         backendUrl: parsed.backendUrl || "",
+        pairingCode: parsed.pairingCode || "",
+        easyTaskType: parsed.easyTaskType || "",
+        easyTaskInput: parsed.easyTaskInput || "",
+        lastSystemCheck: parsed.lastSystemCheck || null,
         strictFacts: parsed.strictFacts !== false,
         runAgent: parsed.runAgent !== false,
         evidenceMode: parsed.evidenceMode !== false,
@@ -1051,6 +1357,10 @@
         facts: {},
         currentSessionId: "",
         backendUrl: "",
+        pairingCode: "",
+        easyTaskType: "",
+        easyTaskInput: "",
+        lastSystemCheck: null,
         strictFacts: true,
         runAgent: true,
         evidenceMode: true,

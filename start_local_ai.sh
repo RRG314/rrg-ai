@@ -12,6 +12,21 @@ source .venv/bin/activate
 pip install -q -r requirements.txt
 mkdir -p .ai_data
 
+PAIRING_CODE_FILE=".ai_data/pairing_code.txt"
+if [[ -n "${AI_BOOTSTRAP_PAIRING_CODE:-}" ]]; then
+  PAIRING_CODE="${AI_BOOTSTRAP_PAIRING_CODE}"
+elif [[ -s "${PAIRING_CODE_FILE}" ]]; then
+  PAIRING_CODE="$(cat "${PAIRING_CODE_FILE}")"
+else
+  PAIRING_CODE="$(python3 - <<'PY'
+import secrets
+print(secrets.token_urlsafe(10))
+PY
+)"
+  printf "%s" "${PAIRING_CODE}" > "${PAIRING_CODE_FILE}"
+fi
+export AI_BOOTSTRAP_PAIRING_CODE="${PAIRING_CODE}"
+
 BACKEND_HOST="127.0.0.1"
 BACKEND_PORT="${AI_PORT:-8000}"
 OLLAMA_HOST="127.0.0.1"
@@ -22,7 +37,27 @@ AI_RECURSIVE_ADIC_RANKING="${AI_RECURSIVE_ADIC_RANKING:-1}"
 AI_RADF_BETA="${AI_RADF_BETA:-0.35}"
 AI_RADF_ALPHA="${AI_RADF_ALPHA:-1.5}"
 AI_REQUIRE_TOKEN="${AI_REQUIRE_TOKEN:-1}"
-export AI_RECURSIVE_ADIC_RANKING AI_RADF_BETA AI_RADF_ALPHA AI_REQUIRE_TOKEN
+AI_REPO_COLLECTION_ROOT="${AI_REPO_COLLECTION_ROOT:-$(cd "${ROOT_DIR}/.." && pwd)}"
+
+if [[ -z "${AI_LEARNING_PDF_PATHS:-}" ]]; then
+  PDF_A="$HOME/Downloads/The_Recursive_Adic_Number_Field__Construction__Analysis__and_Recursive_Depth_Transforms (1).pdf"
+  PDF_B="$HOME/Downloads/v.pdf"
+  PDF_LIST=()
+  if [[ -f "${PDF_A}" ]]; then
+    PDF_LIST+=("${PDF_A}")
+  fi
+  if [[ -f "${PDF_B}" ]]; then
+    PDF_LIST+=("${PDF_B}")
+  fi
+  if [[ "${#PDF_LIST[@]}" -gt 0 ]]; then
+    AI_LEARNING_PDF_PATHS="$(IFS=:; echo "${PDF_LIST[*]}")"
+  fi
+fi
+
+export AI_RECURSIVE_ADIC_RANKING AI_RADF_BETA AI_RADF_ALPHA AI_REQUIRE_TOKEN AI_REPO_COLLECTION_ROOT
+if [[ -n "${AI_LEARNING_PDF_PATHS:-}" ]]; then
+  export AI_LEARNING_PDF_PATHS
+fi
 
 OLLAMA_PID=""
 
@@ -119,7 +154,12 @@ echo "RRG AI is running."
 echo "- UI + API: ${UI_URL}"
 echo "- Model:    ${AI_MODEL}"
 echo "- RADF:     enabled=${AI_RECURSIVE_ADIC_RANKING} alpha=${AI_RADF_ALPHA} beta=${AI_RADF_BETA}"
+echo "- Sources:  repo-root=${AI_REPO_COLLECTION_ROOT}"
+if [[ -n "${AI_LEARNING_PDF_PATHS:-}" ]]; then
+  echo "- PDFs:     ${AI_LEARNING_PDF_PATHS}"
+fi
 echo "- Security: token auth=${AI_REQUIRE_TOKEN} (auto-managed local token)"
+echo "- Pairing:  ${PAIRING_CODE} (needed only when connecting from external origin like GitHub Pages)"
 echo "Press Ctrl+C to stop."
 
 wait "$BACKEND_PID"

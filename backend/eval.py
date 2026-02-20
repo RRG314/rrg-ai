@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .agent import AgentRunConfig, LocalAgent
 from .llm import LLMStatus, OllamaClient
+from .run_isolation import resolve_bench_paths
 from .storage import SQLiteStore
 from .tools.filesystem import FileBrowser
 
@@ -39,7 +40,9 @@ def _task_score(result: dict[str, object], task: EvalTask) -> dict[str, object]:
     provenance = result.get("provenance") or []
     evidence = result.get("evidence") or []
 
-    keyword_hits = sum(1 for k in task.expected_keywords if k.lower() in answer)
+    snippets = " ".join(str(item.get("snippet") or "") for item in provenance if isinstance(item, dict)).lower()
+    combined = f"{answer}\n{snippets}"
+    keyword_hits = sum(1 for k in task.expected_keywords if k.lower() in combined)
     keyword_score = (keyword_hits / max(1, len(task.expected_keywords))) * 0.25
 
     provenance_score = 0.25 if len(provenance) >= task.min_provenance else 0.0
@@ -294,49 +297,62 @@ def _build_tasks(
     return tasks
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Run local agent eval suite")
-    parser.add_argument("--data-dir", default=os.getenv("AI_DATA_DIR", ".ai_data"))
-    parser.add_argument("--files-root", default=os.getenv("AI_FILES_ROOT", str(Path.cwd())))
-    parser.add_argument("--model", default=os.getenv("AI_MODEL", "llama3.2:3b"))
-    parser.add_argument("--ollama-url", default=os.getenv("AI_OLLAMA_URL", "http://127.0.0.1:11434"))
-    parser.add_argument("--max-steps", type=int, default=8)
-    parser.add_argument("--task-count", type=int, default=24, help="Number of tasks to run (20-50)")
-    parser.add_argument("--use-llm", action="store_true", help="Use Ollama model during eval")
-    args = parser.parse_args()
-
-    if args.task_count < 20 or args.task_count > 50:
-        raise SystemExit("--task-count must be between 20 and 50")
-
-    data_dir = Path(args.data_dir).expanduser().resolve()
-    data_dir.mkdir(parents=True, exist_ok=True)
-    eval_dir = data_dir / "evals"
+def run_suite(
+    data_dir: Path,
+    files_root: Path,
+    model: str,
+    ollama_url: str,
+    use_llm: bool,
+    max_steps: int,
+    task_count: int,
+    target_score: float = 95.0,
+    isolated: bool = True,
+    persist_db: bool = False,
+    db_path: Path | None = None,
+) -> Path:
+    base_data_dir = Path(data_dir).expanduser().resolve()
+    base_data_dir.mkdir(parents=True, exist_ok=True)
+    eval_dir = base_data_dir / "evals"
     eval_dir.mkdir(parents=True, exist_ok=True)
-    files_root = Path(args.files_root).expanduser().resolve()
-    workspace = files_root / ".eval_workspace"
+
+    use_isolated = bool(isolated and not persist_db)
+    resolved_db_path, run_data_dir, run_id = resolve_bench_paths(
+        prefix="eval",
+        isolated=use_isolated,
+        db_path=db_path if persist_db else None,
+        data_dir=base_data_dir,
+    )
+    run_data_dir.mkdir(parents=True, exist_ok=True)
+    downloads_dir = run_data_dir / "downloads"
+    downloads_dir.mkdir(parents=True, exist_ok=True)
+
+    effective_files_root = (run_data_dir / "files") if use_isolated else Path(files_root).expanduser().resolve()
+    effective_files_root.mkdir(parents=True, exist_ok=True)
+    workspace = effective_files_root / ".eval_workspace"
     workspace.mkdir(parents=True, exist_ok=True)
 
-    db_path = data_dir / "eval.sqlite3"
-    store = SQLiteStore(db_path)
-    files = FileBrowser(files_root)
-    llm = OllamaClient(model=args.model, base_url=args.ollama_url) if args.use_llm else NoLLM()
-    agent = LocalAgent(store=store, files=files, llm=llm, downloads_dir=data_dir / "downloads")
+    files = FileBrowser(effective_files_root)
+    llm = OllamaClient(model=model, base_url=ollama_url) if use_llm else NoLLM()
+
+    store = SQLiteStore(resolved_db_path)
+    agent = LocalAgent(store=store, files=files, llm=llm, downloads_dir=downloads_dir)
 
     docs, seed_files = _build_seed_data(store, workspace)
-    tasks = _build_tasks(docs, seed_files, workspace, max_steps=args.max_steps)
+    tasks = _build_tasks(docs, seed_files, workspace, max_steps=max_steps)
 
-    if args.task_count > len(tasks):
-        base = list(tasks)
-        while len(tasks) < args.task_count:
-            tasks.extend(base)
-    tasks = tasks[: args.task_count]
+    if task_count > 0:
+        if task_count > len(tasks):
+            base = list(tasks)
+            while len(tasks) < task_count:
+                tasks.extend(base)
+        tasks = tasks[:task_count]
 
     run_results: list[dict[str, object]] = []
     aggregate = 0.0
     pass_count = 0
-    session_id: str | None = None
-
+    pass_count_95 = 0
     per_category: dict[str, list[float]] = {}
+    session_id: str | None = None
 
     for task in tasks:
         result = agent.run_agent(session_id, task.message, config=task.cfg)
@@ -346,6 +362,8 @@ def main() -> None:
         aggregate += float(score["score"])
         if bool(score["passed"]):
             pass_count += 1
+        if float(score["score"]) >= float(target_score):
+            pass_count_95 += 1
 
         per_category.setdefault(task.category, []).append(float(score["score"]))
 
@@ -364,6 +382,7 @@ def main() -> None:
 
     final_score = round(aggregate / max(1, len(tasks)), 2)
     pass_rate = round((pass_count / max(1, len(tasks))) * 100.0, 2)
+    pass_rate_95 = round((pass_count_95 / max(1, len(tasks))) * 100.0, 2)
 
     category_summary = {
         cat: {
@@ -371,9 +390,14 @@ def main() -> None:
             "avg_score": round(sum(scores) / max(1, len(scores)), 2),
             "min_score": round(min(scores), 2),
             "max_score": round(max(scores), 2),
+            "pass_rate_95": round((sum(1 for s in scores if s >= float(target_score)) / max(1, len(scores))) * 100.0, 2),
+            "meets_95": bool(min(scores) >= float(target_score)),
         }
         for cat, scores in per_category.items()
     }
+    meets_95 = bool(final_score >= float(target_score)) and all(
+        bool(item.get("meets_95")) for item in category_summary.values()
+    )
 
     now = int(time.time())
     report = {
@@ -382,19 +406,67 @@ def main() -> None:
         "task_count": len(tasks),
         "score": final_score,
         "pass_rate": pass_rate,
-        "use_llm": bool(args.use_llm),
-        "model": args.model,
-        "ollama_url": args.ollama_url,
+        "target_score": float(target_score),
+        "pass_rate_95": pass_rate_95,
+        "meets_95": meets_95,
+        "use_llm": bool(use_llm),
+        "model": model,
+        "ollama_url": ollama_url,
+        "run_id": run_id,
+        "db_path": str(resolved_db_path),
+        "data_dir": str(run_data_dir),
+        "isolated": bool(use_isolated),
+        "persist_db": bool(persist_db),
         "categories": category_summary,
         "results": run_results,
     }
 
-    out_path = eval_dir / f"eval_{now}.json"
+    out_path = eval_dir / f"eval_{run_id}.json"
     out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return out_path
 
-    print(f"Eval score: {final_score}")
-    print(f"Pass rate: {pass_rate}%")
-    print(f"Task count: {len(tasks)}")
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run local agent eval suite")
+    parser.add_argument("--data-dir", default=os.getenv("AI_DATA_DIR", ".ai_data"))
+    parser.add_argument("--files-root", default=os.getenv("AI_FILES_ROOT", str(Path.cwd())))
+    parser.add_argument("--model", default=os.getenv("AI_MODEL", "llama3.2:3b"))
+    parser.add_argument("--ollama-url", default=os.getenv("AI_OLLAMA_URL", "http://127.0.0.1:11434"))
+    parser.add_argument("--max-steps", type=int, default=8)
+    parser.add_argument("--task-count", type=int, default=24, help="Number of tasks to run (20-50)")
+    parser.add_argument("--use-llm", action="store_true", help="Use Ollama model during eval")
+    parser.add_argument("--target-score", type=float, default=95.0)
+    parser.add_argument("--isolated", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--persist-db", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--db-path", default="")
+    args = parser.parse_args()
+
+    if args.task_count < 20 or args.task_count > 50:
+        raise SystemExit("--task-count must be between 20 and 50")
+
+    out_path = run_suite(
+        data_dir=Path(args.data_dir).expanduser().resolve(),
+        files_root=Path(args.files_root).expanduser().resolve(),
+        model=str(args.model),
+        ollama_url=str(args.ollama_url),
+        use_llm=bool(args.use_llm),
+        max_steps=int(args.max_steps),
+        task_count=int(args.task_count),
+        target_score=float(args.target_score),
+        isolated=bool(args.isolated),
+        persist_db=bool(args.persist_db),
+        db_path=Path(args.db_path).expanduser().resolve() if str(args.db_path or "").strip() else None,
+    )
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    print(f"Eval score: {payload['score']}")
+    print(f"Pass rate: {payload['pass_rate']}%")
+    print(f"Pass rate >= {payload['target_score']}: {payload['pass_rate_95']}%")
+    print(f"Meets 95 target: {payload['meets_95']}")
+    print(f"Task count: {payload['task_count']}")
+    print(f"Run ID: {payload['run_id']}")
+    print(f"Isolated: {payload['isolated']}")
+    print(f"DB: {payload['db_path']}")
+    print(f"Run data dir: {payload['data_dir']}")
     print(f"Report: {out_path}")
 
 

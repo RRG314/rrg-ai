@@ -116,6 +116,21 @@ class ImprovementRuleItem:
     created_at: int
 
 
+@dataclass
+class RecursiveLearningEventItem:
+    id: int
+    session_id: str
+    task_id: str
+    layer: str
+    score: float
+    depth: float
+    dual_grad: float
+    hyper_delta: float
+    heuristic_updates: dict[str, object]
+    metrics: dict[str, object]
+    created_at: int
+
+
 class SQLiteStore:
     def __init__(
         self,
@@ -256,6 +271,20 @@ class SQLiteStore:
                     rule TEXT NOT NULL,
                     trigger TEXT NOT NULL DEFAULT '',
                     confidence REAL NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS recursive_learning_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    layer TEXT NOT NULL DEFAULT 'recursive-learning-v1',
+                    score REAL NOT NULL DEFAULT 0,
+                    depth REAL NOT NULL DEFAULT 0,
+                    dual_grad REAL NOT NULL DEFAULT 0,
+                    hyper_delta REAL NOT NULL DEFAULT 0,
+                    heuristic_updates_json TEXT NOT NULL DEFAULT '{}',
+                    metrics_json TEXT NOT NULL DEFAULT '{}',
                     created_at INTEGER NOT NULL
                 );
                 """
@@ -586,6 +615,76 @@ class SQLiteStore:
             for r in rows
         ]
 
+    def add_recursive_learning_event(
+        self,
+        session_id: str,
+        task_id: str,
+        layer: str,
+        score: float,
+        depth: float,
+        dual_grad: float,
+        hyper_delta: float,
+        heuristic_updates: dict[str, object] | None = None,
+        metrics: dict[str, object] | None = None,
+    ) -> int:
+        now = int(time.time())
+        heuristic_updates = heuristic_updates or {}
+        metrics = metrics or {}
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO recursive_learning_events(
+                    session_id, task_id, layer, score, depth, dual_grad, hyper_delta,
+                    heuristic_updates_json, metrics_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    task_id,
+                    layer,
+                    float(score),
+                    float(depth),
+                    float(dual_grad),
+                    float(hyper_delta),
+                    _to_json(heuristic_updates),
+                    _to_json(metrics),
+                    now,
+                ),
+            )
+        return int(cursor.lastrowid)
+
+    def list_recursive_learning_events(self, session_id: str, limit: int = 200) -> list[RecursiveLearningEventItem]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    id, session_id, task_id, layer, score, depth, dual_grad, hyper_delta,
+                    heuristic_updates_json, metrics_json, created_at
+                FROM recursive_learning_events
+                WHERE session_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        return [
+            RecursiveLearningEventItem(
+                id=int(r["id"]),
+                session_id=str(r["session_id"]),
+                task_id=str(r["task_id"]),
+                layer=str(r["layer"]),
+                score=float(r["score"]),
+                depth=float(r["depth"]),
+                dual_grad=float(r["dual_grad"]),
+                hyper_delta=float(r["hyper_delta"]),
+                heuristic_updates=_from_json(str(r["heuristic_updates_json"]), fallback={}),
+                metrics=_from_json(str(r["metrics_json"]), fallback={}),
+                created_at=int(r["created_at"]),
+            )
+            for r in rows
+        ]
+
     def memory_snapshot(self, session_id: str, limit: int = 200) -> dict[str, object]:
         return {
             "facts": [x.__dict__ for x in self.list_facts(session_id, limit=limit)],
@@ -594,6 +693,9 @@ class SQLiteStore:
             "artifacts": [x.__dict__ for x in self.list_artifacts(session_id, limit=max(200, limit))],
             "planning_heuristics": [x.__dict__ for x in self.list_planning_heuristics(limit=100)],
             "improvement_rules": [x.__dict__ for x in self.list_improvement_rules(session_id, limit=limit)],
+            "recursive_learning_events": [
+                x.__dict__ for x in self.list_recursive_learning_events(session_id, limit=limit)
+            ],
         }
 
     def create_task(
@@ -793,7 +895,13 @@ class SQLiteStore:
         scored: list[dict[str, str | float]] = []
         for rank_idx, row in enumerate(rows, start=1):
             text = row["chunk_text"].lower()
-            base_score = float(sum(text.count(tok) for tok in tokens))
+            name_text = str(row["doc_name"] or "").lower()
+            source_text = str(row["source"] or "").lower()
+            meta_text = f"{name_text} {source_text}".strip()
+
+            chunk_hits = float(sum(text.count(tok) for tok in tokens))
+            meta_hits = float(sum(meta_text.count(tok) for tok in tokens))
+            base_score = chunk_hits + (1.25 * meta_hits)
             if base_score <= 0:
                 continue
 
@@ -840,8 +948,21 @@ class SQLiteStore:
 
 
 def tokenize(text: str) -> list[str]:
-    tokens = re.findall(r"[a-z][a-z0-9_\-]{2,}", text.lower())
-    return [t for t in tokens if t not in STOPWORDS]
+    raw_tokens = re.findall(r"[a-z][a-z0-9_\-]{2,}", text.lower())
+    out: list[str] = []
+    seen: set[str] = set()
+    for tok in raw_tokens:
+        if tok in STOPWORDS or tok in seen:
+            continue
+        seen.add(tok)
+        out.append(tok)
+        if "_" in tok or "-" in tok:
+            for part in re.split(r"[_\-]+", tok):
+                if len(part) < 3 or part in STOPWORDS or part in seen:
+                    continue
+                seen.add(part)
+                out.append(part)
+    return out
 
 
 def _chunk_text(text: str, size: int, overlap: int) -> Iterable[str]:

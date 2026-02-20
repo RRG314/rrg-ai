@@ -48,6 +48,21 @@
               </select>
               <button id="apply-quick-action" class="ghost">Use</button>
             </div>
+            <div class="row">
+              <select id="easy-task-type">
+                <option value="">Easy Task...</option>
+                <option value="learn_topic">Learn a topic</option>
+                <option value="summarize_site">Summarize a website</option>
+                <option value="read_file">Read a file</option>
+                <option value="search_web">Search web facts</option>
+                <option value="define_word">Define a word</option>
+                <option value="run_tests">Run project tests</option>
+              </select>
+              <button id="run-easy-task" class="ghost">Do Task</button>
+            </div>
+            <div class="row">
+              <input id="easy-task-input" type="text" placeholder="Optional details (topic, URL, file path, or folder)" />
+            </div>
             <div class="row row-tight">
               <label class="check">
                 <input id="strict-facts" type="checkbox" checked />
@@ -72,6 +87,15 @@
                 <div class="row">
                   <input id="backend-url" type="text" placeholder="Backend URL (optional override)" />
                   <button id="connect-backend" class="ghost">Connect Backend</button>
+                </div>
+                <div class="row">
+                  <button id="run-system-check" class="ghost">Run 95% System Check</button>
+                </div>
+                <div class="row">
+                  <input id="pairing-code" type="text" placeholder="Pairing code (only needed for GitHub Pages UI)" />
+                </div>
+                <div class="row row-tight">
+                  <pre id="system-check-view">System check has not been run yet.</pre>
                 </div>
                 <div class="row">
                   <input id="upload-file" type="file" />
@@ -110,6 +134,10 @@
               <section>
                 <h3>Evidence Objects</h3>
                 <pre id="agent-evidence-view">No evidence yet.</pre>
+              </section>
+              <section>
+                <h3>What I Learned</h3>
+                <pre id="agent-learned-view">No adaptive update yet.</pre>
               </section>
             </div>
           </details>
